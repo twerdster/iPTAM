@@ -3,18 +3,18 @@
 #include "helpers.h"
 #include "vector_image_ref.h"
 #include <iostream>
-#include "CAMSIZE.h"
 
 using namespace std;
 using namespace CVD;
 
 ATANCamera::ATANCamera(string sName)
 {
-  // The camera name is used to find the camera's parameters in a GVar.
   msName = sName;
-	mgvvCameraParams=CameraParameters;
-  mvImageSize[0] = CAMSIZEX; 
-  mvImageSize[1] = CAMSIZEY;
+//	mgvvCameraParams=CameraParameters;
+//TooN::makeVector(0.92295, 1.28292, 0.497764, 0.490052, 0); -> best vector or calib s far
+	mgvvCameraParams= TooN::makeVector(0.92295, 1.28292, 0.497764, 0.490052, 0);
+  mvImageSize[0] = 640; 
+  mvImageSize[1] = 480;
   RefreshParams();
 }
 

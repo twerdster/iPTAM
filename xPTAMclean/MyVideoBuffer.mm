@@ -133,17 +133,17 @@ GLint abh;
 	//changing the order of access of the individual pixels massively changes the speed of the program.
 	//i think this is because there are multiple and frequent cache misses when the pixels are not called in order
 	unsigned int * pntrBWImage= (unsigned int *)bwImage;
-	unsigned int index;
+	unsigned int index=0;
 	unsigned int fourBytes;
 	for (int j=0;j<480; j++)
+	{
 	for (int i=0; i<640; i++) 
 		{
 			index=(640)*j+i;
 			fourBytes=pntrBWImage[index];
-			//bwImage[index]=(fourBytes<<1);//pntrBWImage[index];//(bwImage[4*index+0]+bwImage[4*index+1]+bwImage[4*index+2])/3;//(pixels[4*index]+pixels[4*index+1]+pixels[4*index+2]);
-			//bwImage[index]=(fourBytes>>(1*8) & 0x000F + fourBytes>>(2*8) & 0x000F + fourBytes>>(3*8) & 0x000F)/3;
 			bwImage[index]=((unsigned char)fourBytes>>(2*8)) +((unsigned char)fourBytes>>(1*8))+((unsigned char)fourBytes>>(0*8));
 		}
+	}
 }
 
 CVD::Image<CVD::byte> mimFrameBW;
@@ -167,17 +167,6 @@ CVD::Image<CVD::byte> mimFrameBW;
 	
 	CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
 	CVPixelBufferLockBaseAddress( pixelBuffer, 0 );
-	
-	//-- If we haven't created the video texture, do so now.
-	//	if(m_textureHandle == 0)
-//	{
-//m_textureHandle = [self createVideoTextuerUsingWidth:videoDimensions.width Height:videoDimensions.height];
-//	}
-	
-
-	
-
-	
 	
 	// This application only creates a single context which is already set current at this point.
     // This call is redundant, but needed if dealing with multiple contexts.
@@ -226,13 +215,13 @@ CVD::Image<CVD::byte> mimFrameBW;
 	
 	GLfloat spriteVertices[] =  {
 		0,0,0,   
-		320,0,0,   
+		640,0,0,   
 		0,480,0, 
-		320,480,0};
+		640,480,0};
 	
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
-	glOrthof(0, 320, 0, 480, 0, 1);
+	glOrthof(0, 640, 0, 480, 0, 1);
 	
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();

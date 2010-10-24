@@ -7,6 +7,7 @@
 
 @synthesize window;
 @synthesize glView;
+@synthesize userString;
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {

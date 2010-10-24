@@ -75,7 +75,8 @@ Matrix<3> HomographyInit::HomographyFromMatches(vector<HomographyMatch> vMatches
       
       double x = vMatches[n].v2CamPlaneFirst[0];
       double y = vMatches[n].v2CamPlaneFirst[1];
-      
+      //NSLog(@"%f,%f <=> %f,%f",u,v,x,y);
+		
       // [u v]T = H [x y]T
       m2Nx9[n*2+0][0] = x;
       m2Nx9[n*2+0][1] = y;
@@ -124,6 +125,7 @@ void HomographyInit::RefineHomographyWithInliers()
   vector<Vector<2> > vvErrors;
   vector<double> vdErrorSquared;
   
+//	for(unsigned int i=0; i<5; i++)
   for(unsigned int i=0; i<mvHomographyInliers.size(); i++)
     {
       // First, find error.

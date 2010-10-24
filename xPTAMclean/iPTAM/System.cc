@@ -3,6 +3,9 @@
 #import <OpenGLES/ES1/gl.h>
 #import <OpenGLES/ES1/glext.h>
 #include <stdlib.h>
+
+#import "GLVideoFrameAppDelegate.h"
+
 #include "ATANCamera.h"
 #include "MapMaker.h"
 #include "Tracker.h"
@@ -52,11 +55,12 @@ void System::RunOneFrame(unsigned char *bwImage,uint hnd)
 	//glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
     //glClear(GL_COLOR_BUFFER_BIT);
 
-
     mpTracker->TrackFrame(mimFrameBW, hnd,1);
-      
-	//string sCaption = mpTracker->GetMessageForUser();
-    //}
+    string s=mpTracker->GetMessageForUser();
+	UILabel *debugLabel=[[[UIApplication sharedApplication] delegate] userString];
+	debugLabel.text=[NSString stringWithFormat:@"%s",s.c_str()];
+	
+
 }
 
 void System::GUICommandCallBack(void *ptr, string sCommand, string sParams)

@@ -1,6 +1,9 @@
 // Copyright 2008 Isis Innovation Limited
 #import <OpenGLES/ES1/gl.h>
 #import <OpenGLES/ES1/glext.h>
+
+
+
 #include "Tracker.h"
 #include "MEstimator.h"
 #include "ShiTomasi.h"
@@ -14,7 +17,6 @@
 #include "fast_corner.h"
 #include "vision.h"
 #include "wls.h"
-#include "CAMSIZE.h"
 
 #include <fstream>
 #include <fcntl.h>
@@ -22,31 +24,20 @@
 using namespace CVD;
 using namespace std;
 
-//static const GLfloat vertices[] = {
-//	5,			CAMSIZEY-5,	0.0,
-//	CAMSIZEX - 5,	CAMSIZEY-5,	0.0,
-//	5,			5,			0.0,
-//	CAMSIZEX- 5,	5,			0.0
-//};
-//
-//static const GLfloat texCoords[] = {
-//	0.0, 1,
-//	1, 1,
-//	0.0, 0.0,
-//	1, 0.0
-//};
-
+//The following is under the assumption that we are dealing with 
+//a screen that is 640 in width and 480 in height
+//and that the origin is in top left corner
 GLfloat spriteTexcoords[] = {
-	1,1,   
-	1,0.0f,
-	0,1,   
-	0.0f,0,};
+	0,0,
+	0,1,
+	1,0,
+	1,1};
 
 GLfloat spriteVertices[] =  {
-	0,0,0,   
-	640,0,0,   
-	0,480,0, 
-	640,480,0};
+	0,0,   
+	0,480,   
+	640,0, 
+	640,480};
 
 GLuint createNPOTTexture(GLuint width,GLuint height) 
 {
@@ -136,11 +127,19 @@ void Tracker::Reset()
 // functions. bDraw tells the tracker wether it should output any GL graphics
 // or not (it should not draw, for example, when AR stuff is being shown.)
 //void Tracker::TrackFrame(Image<byte> &imFrame, bool bDraw)
+
+GLfloat transpose[]={
+	0,1,0,0,
+	1,0,0,0,
+	0,0,1,0,
+	0,0,0,1
+};
+
 void Tracker::TrackFrame(Image<byte> &imFrame, uint hnd,bool bDraw)
 {
 	mbDraw = bDraw;
 	mMessageForUser.str("");   
-	
+
 	static bool firstRun=true;
 	
 	if (firstRun) {
@@ -186,52 +185,49 @@ void Tracker::TrackFrame(Image<byte> &imFrame, uint hnd,bool bDraw)
 		
 		glMatrixMode(GL_PROJECTION);
 		glLoadIdentity();
-		glOrthof(0, 640, 0, 480, 0, 1);
+		glOrthof(480, 0, 640,0, 0, 1);
+		//glOrthof(0, 480, 0, 640, 0, 1);
 		
 		glMatrixMode(GL_MODELVIEW);
 		glLoadIdentity();
+		glLoadMatrixf(transpose);
+	
 		glEnableClientState(GL_VERTEX_ARRAY);
 		glEnableClientState(GL_TEXTURE_COORD_ARRAY);
 		glEnable(GL_TEXTURE_2D);
 		
-		glVertexPointer(3, GL_FLOAT, 0, spriteVertices);
+		glVertexPointer(2, GL_FLOAT, 0, spriteVertices);
 		glTexCoordPointer(2, GL_FLOAT, 0, spriteTexcoords);	
 		glBindTexture(GL_TEXTURE_2D, textureHandle);
+		
+		glColor4f(1, 1, 1, 1);
 		glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 		
-		glDisableClientState(GL_COLOR_ARRAY);
-		glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-		glBindTexture(GL_TEXTURE_2D, 0);
 		
-		//	NSLog(@"sizeof(imageRef):%i",sizeof(CVD::ImageRef));
-		//	NSLog(@"fast corners:%i",mCurrentKF.aLevels[0].vCorners.size());
+		//----
+		glDisable(GL_TEXTURE_2D);
 		
-		
-		GLshort *crnrs=(GLshort*)malloc(sizeof(GLushort)*2*mCurrentKF.aLevels[0].vCorners.size());
-		for (int i=0; i<mCurrentKF.aLevels[0].vCorners.size(); i++) {
-			crnrs[2*i]=mCurrentKF.aLevels[0].vCorners[i].y;
-			crnrs[2*i+1]=mCurrentKF.aLevels[0].vCorners[i].x;
-		}
-		
-		glMatrixMode(GL_PROJECTION);
-		glLoadIdentity();
-		glOrthof(480, 0, 640, 0,0, 1);
-		
-		glMatrixMode(GL_MODELVIEW);
-		glLoadIdentity();
-		
-		
+		//glDrawPixels(mCurrentKF.aLevels[0].im);
 		if(1)//TrackerDrawFASTCorners)
 		{
-			glColor4f(1,0,1,1);  glPointSize(2); 		
+			GLshort *crnrs=(GLshort*)malloc(sizeof(GLushort)*2*mCurrentKF.aLevels[0].vCorners.size());
+			for (int i=0; i<mCurrentKF.aLevels[0].vCorners.size(); i++) {
+				crnrs[2*i]=mCurrentKF.aLevels[0].vCorners[i].x;
+				crnrs[2*i+1]=mCurrentKF.aLevels[0].vCorners[i].y;
+			}
+			
+			glColor4f(1,0,1,1);  glPointSize(1); 		
 			glVertexPointer(2,GL_SHORT,0,crnrs);
 			glDrawArrays(GL_POINTS, 0, mCurrentKF.aLevels[0].vCorners.size());
-			glColor4f(1, 1, 1, 1);
+			free(crnrs);
 		}
+		
 		glDisableClientState(GL_VERTEX_ARRAY);
-		free(crnrs);
+		glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+		
+		//----
     }
 	
 	// Decide what to do - if there is a map, try to track the map ...
@@ -315,6 +311,8 @@ void Tracker::RenderGrid()
 {
 	// The colour of the ref grid shows if the coarse stage of tracking was used
 	// (it's turned off when the camera is sitting still to reduce jitter.)
+	
+	
 	if(mbDidCoarse)
 		glColor4f(.0, 0.5, .0, 0.6);
 	else
@@ -332,6 +330,7 @@ void Tracker::RenderGrid()
 			v3[1] = (j - nHalfCells) * 0.1;
 			v3[2] = 0.0;
 			Vector<3> v3Cam = mse3CamFromWorld * v3;
+			
 			if(v3Cam[2] < 0.001)
 				v3Cam[2] = 0.001;
 			imVertices[i][j] = mCamera.Project(project(v3Cam));
@@ -347,7 +346,7 @@ void Tracker::RenderGrid()
 		glVertexPointer(2, GL_FLOAT, 0, &imVertices[i][0]);
 		glDrawArrays(GL_LINE_STRIP, 0, nTot);
 		
-		glVertexPointer(2, GL_FLOAT,sizeof(GLfloat)*nTot, &imVertices[0][i]);
+		glVertexPointer(2, GL_FLOAT,sizeof(GLfloat)*2*nTot, &imVertices[0][i]);
 		glDrawArrays(GL_LINE_STRIP, 0, nTot);
 	};
 	glDisableClientState(GL_VERTEX_ARRAY);
@@ -536,8 +535,8 @@ int Tracker::TrailTracking_Advance()
 			{tempTrailColours[0]=1.0;tempTrailColours[1]=1.0; tempTrailColours[2]=0;tempTrailColours[3]=1.0;}
 			
 			//glVertex(trail.irInitialPos);
-			tempTrailVertices[0]=trail.irInitialPos.y;
-			tempTrailVertices[1]=trail.irInitialPos.x;
+			tempTrailVertices[0]=trail.irInitialPos.x;
+			tempTrailVertices[1]=trail.irInitialPos.y;
 			
 			if(bFound) 
 				//glColor3f(1,0,0);
@@ -550,8 +549,8 @@ int Tracker::TrailTracking_Advance()
 				tempTrailColours[7]=tempTrailColours[3];
 			}
 			//glVertex(trail.irCurrentPos);
-			tempTrailVertices[2]=trail.irCurrentPos.y;
-			tempTrailVertices[3]=trail.irCurrentPos.x;
+			tempTrailVertices[2]=trail.irCurrentPos.x;
+			tempTrailVertices[3]=trail.irCurrentPos.y;
 			
 			glVertexPointer(2,GL_FLOAT,0,&tempTrailVertices);
 			glColorPointer(4, GL_FLOAT, 0, &tempTrailColours);
@@ -839,9 +838,9 @@ void Tracker::TrackMap()
 			aPoint[0]=(GLfloat)(*it)->v2Image[0];
 			aPoint[1]=(GLfloat)(*it)->v2Image[1];
 			
-		//	glVertexPointer(2,GL_FLOAT,0,&aPoint[0]);
-		//	dsfsglColorPointer(3, GL_FLOAT,0, &gavLevelColors[(*it)->nSearchLevel]);
-		//	glDrawArrays(GL_POINTS, 0, 1);			
+			glVertexPointer(2,GL_FLOAT,0,&aPoint[0]);
+		    glColorPointer(3, GL_FLOAT,0, &gavLevelColors[(*it)->nSearchLevel]);
+			glDrawArrays(GL_POINTS, 0, 1);			
 		}
 		
 		glDisable(GL_BLEND);
@@ -1149,6 +1148,7 @@ string Tracker::GetMessageForUser()
 {
 	return mMessageForUser.str();
 }
+
 
 void Tracker::CalcSBIRotation()
 {

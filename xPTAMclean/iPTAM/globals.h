@@ -4,7 +4,7 @@
 #include "TooN.h"
 
 #define NUMTRACKERCAMPARAMETERS 5
-const TooN::Vector<NUMTRACKERCAMPARAMETERS> CameraParameters = TooN::makeVector(0.942415 ,1.27385 ,0.520778 ,0.597289 ,0.709802);
+const TooN::Vector<NUMTRACKERCAMPARAMETERS> CameraParameters;
 
 const double CameraCalibratorBlurSigma = 10;
 const double CameraCalibratorMeanGate = 10;
@@ -16,17 +16,11 @@ const int TrackerDrawFASTCorners =0;
 const int MaxInitialTrails = 100;
 const int BundleMaxIterations = 20;
 const double BundleUpdateSquaredConvergenceLimit = 1e-06;
-const int BundleCout = 0;
-//const CVD::ImageRef ARDriverFrameBufferSize = CVD::ImageRef(320,240);
+const int BundleCout = 240;
+
 const double MapMakerWiggleScale = 0.1;
 const std::string BundleMEstimator = "Tukey";
 const double BundleMinTukeySigma = 0.4;
-
-//const double CameraCalibratorCornerPatchPixelSize = 20;
-//const double CameraCalibratorExpandByStepMaxDistFrac = 03;
-
-//double DrawMap = 0;
-//double DrawAR = 0;
 
 const double TrackerRotationEstimatorBlur = 0.75;
 const int TrackerUseRotationEstimator = 1;
@@ -38,7 +32,7 @@ const int TrackerCoarseSubPixIts = 8;
 
 const int TrackerDisableCoarse = 0;
 const double TrackerCoarseMinVelocity = 0.006;
-const int TrackerMaxPatchesPerFrame = 100;
+const int TrackerMaxPatchesPerFrame = 1000;
 const std::string TrackerMEstimator = "Tukey";
 const double TrackerTrackingQualityGood = 0.3;
 const double TrackerTrackingQualityLost = 0.13;
