@@ -58,7 +58,7 @@ GLint abh;
 		AVCaptureVideoDataOutput * dataOutput = [[[AVCaptureVideoDataOutput alloc] init] autorelease];
 		[dataOutput setAlwaysDiscardsLateVideoFrames:YES]; // Probably want to set this to NO when we're recording//
 		[dataOutput setVideoSettings:[NSDictionary dictionaryWithObject:[NSNumber numberWithInt:kCVPixelFormatType_32BGRA] forKey:(id)kCVPixelBufferPixelFormatTypeKey]]; // Necessary for manual preview
-	
+		
 		// we want our dispatch to be on the main thread so OpenGL can do things with the data
 		[dataOutput setSampleBufferDelegate:self queue:dispatch_get_main_queue()];
 		
@@ -78,11 +78,11 @@ GLint abh;
 
 -(GLuint)createVideoTextuerUsingWidth:(GLuint)w Height:(GLuint)h
 {
-//	int dataSize = w * h ;
-//	uint8_t* textureData = (uint8_t*)malloc(dataSize);
-//	if(textureData == NULL)
-//		return 0;
-//	memset(textureData, 128, dataSize);
+	//	int dataSize = w * h ;
+	//	uint8_t* textureData = (uint8_t*)malloc(dataSize);
+	//	if(textureData == NULL)
+	//		return 0;
+	//	memset(textureData, 128, dataSize);
 	
 	GLuint handle;
 	glGenTextures(1, &handle);
@@ -137,7 +137,7 @@ GLint abh;
 	unsigned int fourBytes;
 	for (int j=0;j<480; j++)
 	{
-	for (int i=0; i<640; i++) 
+		for (int i=0; i<640; i++) 
 		{
 			index=(640)*j+i;
 			fourBytes=pntrBWImage[index];
@@ -155,7 +155,7 @@ CVD::Image<CVD::byte> mimFrameBW;
 		self.videoFrameRate = 1.0 / CMTimeGetSeconds( CMTimeSubtract( timestamp, self.previousTimestamp ) );
 	
 	previousTimestamp = timestamp;
-
+	
 	CMFormatDescriptionRef formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
 	self.videoDimensions = CMVideoFormatDescriptionGetDimensions(formatDesc);
 	
@@ -180,9 +180,12 @@ CVD::Image<CVD::byte> mimFrameBW;
 	glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 	
-		
+	
 	unsigned char* linebase = (unsigned char *)CVPixelBufferGetBaseAddress( pixelBuffer );
 	[self convertToBlackWhite:linebase];
+	
+	static int SKIP=1;
+	static int skippedFrames=0;
 	
 	if (0) {
 		glBindTexture(GL_TEXTURE_2D, m_textureHandle);
@@ -190,16 +193,18 @@ CVD::Image<CVD::byte> mimFrameBW;
 		[self renderCameraToSprite:m_textureHandle];
 	}
 	else
-		ptam.RunOneFrame(bwImage,m_textureHandle);
+		if (skippedFrames++%SKIP==0){
+			ptam.RunOneFrame(bwImage,m_textureHandle);
+			
+			
+			// This application only creates a single color renderbuffer which is already bound at this point.
+			// This call is redundant, but needed if dealing with multiple renderbuffers.
+			glBindRenderbufferOES(GL_RENDERBUFFER_OES, arb);
+			
+			[acontext presentRenderbuffer:GL_RENDERBUFFER_OES];
+		}
 	
-	
-	// This application only creates a single color renderbuffer which is already bound at this point.
-    // This call is redundant, but needed if dealing with multiple renderbuffers.
-	glBindRenderbufferOES(GL_RENDERBUFFER_OES, arb);
-	
-    [acontext presentRenderbuffer:GL_RENDERBUFFER_OES];
-	
-		CVPixelBufferUnlockBaseAddress( pixelBuffer, 0 );
+	CVPixelBufferUnlockBaseAddress( pixelBuffer, 0 );
 	
 }
 
@@ -226,18 +231,18 @@ CVD::Image<CVD::byte> mimFrameBW;
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 	
-
+	
 	glEnableClientState(GL_VERTEX_ARRAY);
 	glEnableClientState(GL_TEXTURE_COORD_ARRAY);
 	glEnable(GL_TEXTURE_2D);
-
+	
 	glVertexPointer(3, GL_FLOAT, 0, spriteVertices);
 	glTexCoordPointer(2, GL_FLOAT, 0, spriteTexcoords);	
 	glBindTexture(GL_TEXTURE_2D, text);
-
-
+	
+	
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-
+	
 	glDisableClientState(GL_VERTEX_ARRAY);
 	glDisableClientState(GL_COLOR_ARRAY);
 	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -249,7 +254,7 @@ CVD::Image<CVD::byte> mimFrameBW;
 {
     // Replace the implementation of this method to do your own custom drawing
 	
-    }
+}
 
 
 - (void) setGLStuff:(EAGLContext*)c :(GLuint)rb :(GLuint)fb :(GLuint)bw :(GLuint)bh 

@@ -6,10 +6,8 @@
 #define NUMTRACKERCAMPARAMETERS 5
 const TooN::Vector<NUMTRACKERCAMPARAMETERS> CameraParameters;
 
-const double CameraCalibratorBlurSigma = 10;
-const double CameraCalibratorMeanGate = 10;
-const int CameraCalibratorMinCornersForGrabbedImage = 20;
-const double MapMakerMaxKFDistWiggleMult =10;
+
+const double MapMakerMaxKFDistWiggleMult =2;
 const int MapMakerPlaneAlignerRansacs = 100;
 const double Reloc2MaxScore = 9e6;
 const int TrackerDrawFASTCorners =0;

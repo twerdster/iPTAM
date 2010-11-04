@@ -233,7 +233,7 @@ void Tracker::TrackFrame(Image<byte> &imFrame, uint hnd,bool bDraw)
 	// Decide what to do - if there is a map, try to track the map ...
 	if(mMap.IsGood())
 	{
-		if(mnLostFrames < 3)  // .. but only if we're not lost!
+		if(1)//mnLostFrames < 3)  // .. but only if we're not lost!
 		{
 			if(mbUseSBIInit)
 				CalcSBIRotation();
@@ -314,9 +314,9 @@ void Tracker::RenderGrid()
 	
 	
 	if(mbDidCoarse)
-		glColor4f(.0, 0.5, .0, 0.6);
+		glColor4f(.0, 0.5, 1.0, 0.6);
 	else
-		glColor4f(0,0,0,0.6);
+		glColor4f(0,0,1,0.6);
 	
 	// The grid is projected manually, i.e. GL receives projected 2D coords to draw.
 	int nHalfCells = 8;
@@ -816,7 +816,7 @@ void Tracker::TrackMap()
 		v6LastUpdate = v6Update;
     };
 	
-	if(mbDraw)
+	if(1)//mbDraw)
     {
 		
 		glPointSize(6);
