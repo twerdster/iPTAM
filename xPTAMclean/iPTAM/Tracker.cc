@@ -210,7 +210,7 @@ void Tracker::TrackFrame(Image<byte> &imFrame, uint hnd,bool bDraw)
 		glDisable(GL_TEXTURE_2D);
 		
 		//glDrawPixels(mCurrentKF.aLevels[0].im);
-		if(1)//TrackerDrawFASTCorners)
+		if(0)//TrackerDrawFASTCorners)
 		{
 			GLshort *crnrs=(GLshort*)malloc(sizeof(GLushort)*2*mCurrentKF.aLevels[0].vCorners.size());
 			for (int i=0; i<mCurrentKF.aLevels[0].vCorners.size(); i++) {
@@ -583,6 +583,9 @@ int Tracker::TrailTracking_Advance()
 // class PatchFinder finds a projected MapPoint in the current-frame-KeyFrame.
 void Tracker::TrackMap()
 {
+	if (mbUserPressedSpacebar) {
+		StopTracking();
+	}
 	// Some accounting which will be used for tracking quality assessment:
 	for(int i=0; i<LEVELS; i++)
 		manMeasAttempted[i] = manMeasFound[i] = 0;
@@ -1148,7 +1151,6 @@ string Tracker::GetMessageForUser()
 {
 	return mMessageForUser.str();
 }
-
 
 void Tracker::CalcSBIRotation()
 {

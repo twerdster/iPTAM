@@ -17,6 +17,7 @@
 #include "rgb.h"
 #include "byte.h"
 #include "globals.h"
+#include <vector>
 
 class ATANCamera;
 class Map;
@@ -34,6 +35,7 @@ public:
 	
    void SendTrackerStartSig();
     void SendTrackerKillSig();
+	std::vector<float> getCurrentPose();
 	
 private:
   CVD::Image<CVD::byte> mimFrameBW;

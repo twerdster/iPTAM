@@ -7,6 +7,8 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #include "System.h"
+#include "teapot.h"
+
 System ptam;
 
 @implementation MyVideoBuffer
@@ -25,7 +27,7 @@ GLint abh;
 
 - (IBAction) pressButton {
 	NSLog(@"Pressed screen");
-	ptam.SendTrackerStartSig();
+		ptam.SendTrackerStartSig();
 }
 
 -(id) init
@@ -146,6 +148,29 @@ GLint abh;
 	}
 }
 
+- (void) renderTeapot:(std::vector<float>)rt
+{	   
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	//glTranslatef(rt[0], rt[1], rt[2]);
+	glTranslatef(0, 0, -400);
+	glScalef(400, 400, 400);
+	glRotatef(rt[3], rt[4], rt[5], rt[6]);
+	
+//	glScalef(1, 1, -1);
+	glColor4f(1,0,1,1);
+	glEnableClientState(GL_VERTEX_ARRAY);
+	glVertexPointer(3, GL_FLOAT, 0, teapot_vertices);
+	
+	// Draw teapot. The new_teapot_indicies array is an RLE (run-length encoded) version of the teapot_indices array in teapot.h
+	for(int i = 0; i < num_teapot_indices; i += new_teapot_indicies[i] + 1)
+	{
+		glDrawElements(GL_TRIANGLE_STRIP, new_teapot_indicies[i], GL_UNSIGNED_SHORT, &new_teapot_indicies[i+1]);
+	}
+	
+	glDisableClientState(GL_VERTEX_ARRAY);
+}
+
 CVD::Image<CVD::byte> mimFrameBW;
 
 - (void)captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection
@@ -195,13 +220,15 @@ CVD::Image<CVD::byte> mimFrameBW;
 	else
 		if (skippedFrames++%SKIP==0){
 			ptam.RunOneFrame(bwImage,m_textureHandle);
-			
-			
+
+			//[self renderTeapot:ptam.getCurrentPose()];
+			//[self renderTeapot:pos];
 			// This application only creates a single color renderbuffer which is already bound at this point.
 			// This call is redundant, but needed if dealing with multiple renderbuffers.
 			glBindRenderbufferOES(GL_RENDERBUFFER_OES, arb);
 			
 			[acontext presentRenderbuffer:GL_RENDERBUFFER_OES];
+			
 		}
 	
 	CVPixelBufferUnlockBaseAddress( pixelBuffer, 0 );

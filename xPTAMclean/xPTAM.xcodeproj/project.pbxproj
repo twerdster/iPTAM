@@ -79,6 +79,7 @@
 		AFD717FF11AD99FA00C83845 /* Icon-Small.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Icon-Small.png"; sourceTree = "<group>"; };
 		AFD7180011AD99FA00C83845 /* Icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Icon.png; sourceTree = "<group>"; };
 		AFD7181911AD9B6100C83845 /* iTunesArtwork */ = {isa = PBXFileReference; lastKnownFileType = file; path = iTunesArtwork; sourceTree = "<group>"; };
+		C2B91C6012849431003B77EE /* teapot.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = teapot.h; sourceTree = SOURCE_ROOT; };
 		C2D1703412378C9F00AE4C3F /* abs.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = abs.h; sourceTree = "<group>"; };
 		C2D1703512378C9F00AE4C3F /* aligned_mem.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = aligned_mem.h; sourceTree = "<group>"; };
 		C2D1703612378C9F00AE4C3F /* builtin_components.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = builtin_components.h; sourceTree = "<group>"; };
@@ -242,6 +243,7 @@
 		080E96DDFE201D6D7F000001 /* Classes */ = {
 			isa = PBXGroup;
 			children = (
+				C2B91C6012849431003B77EE /* teapot.h */,
 				2514C26D10084DB100A42282 /* ES1Renderer.h */,
 				2514C26E10084DB100A42282 /* ES1Renderer.m */,
 				2514C27110084DB100A42282 /* ESRenderer.h */,
