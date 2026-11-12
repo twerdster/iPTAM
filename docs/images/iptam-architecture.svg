@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="380" viewBox="0 0 960 380" role="img" aria-labelledby="title desc">
   <title id="title">iPTAM architecture (explanatory illustration)</title>
-  <desc id="desc">Explanatory diagram, not a screenshot: iPhone camera frames feed a tracking thread that detects FAST corners and estimates camera pose; a separate map-making thread adds keyframes and runs bundle adjustment on a shared map of points; results are drawn with OpenGL ES.</desc>
+  <desc id="desc">Source architecture schematic, not a screenshot or runtime result. Camera, tracker, map-maker and OpenGL ES components are present; the historical report describes map-matching failure and motion-model-only updates, not working closed-loop tracking.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
@@ -15,7 +15,7 @@
     .flow { stroke: #4b5563; stroke-width: 2; fill: none; marker-end: url(#arrow); }
   </style>
   <rect width="960" height="380" fill="#ffffff"/>
-  <text x="24" y="34" class="h" style="font-size:20px">iPTAM: Parallel Tracking and Mapping ported to the iPhone</text>
+  <text x="24" y="34" class="h" style="font-size:20px">iPTAM: camera, tracking and mapping components</text>
   <text x="936" y="34" class="note" text-anchor="end">Explanatory illustration, not a screenshot</text>
 
   <!-- Camera -->
@@ -27,15 +27,15 @@
 
   <!-- Tracker -->
   <rect x="236" y="70" width="300" height="120" rx="12" fill="#eef2ff" stroke="#6366f1" stroke-width="1.5"/>
-  <text x="386" y="98" class="h" text-anchor="middle">Tracking thread</text>
+  <text x="386" y="98" class="h" text-anchor="middle">Tracking component</text>
   <text x="254" y="124" class="t">• image pyramid + FAST corners</text>
   <text x="254" y="146" class="t">• patch search against map points</text>
   <text x="254" y="166" class="t">• per-frame camera pose</text>
-  <text x="526" y="184" class="m" text-anchor="end">Tracker · Relocaliser</text>
+  <text x="526" y="184" class="m" text-anchor="end">Tracker · recovery disabled</text>
 
   <!-- MapMaker -->
   <rect x="236" y="214" width="300" height="120" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
-  <text x="386" y="242" class="h" text-anchor="middle">Mapping thread</text>
+  <text x="386" y="242" class="h" text-anchor="middle">Mapping component</text>
   <text x="254" y="268" class="t">• two-view initialisation</text>
   <text x="254" y="290" class="t">• add keyframes and new points</text>
   <text x="254" y="310" class="t">• bundle adjustment</text>
@@ -68,5 +68,5 @@
   <text x="396" y="205" class="note">new keyframes</text>
   <path d="M740,200 L780,200" class="flow"/>
 
-  <text x="24" y="364" class="note">Component names come from the source files in xPTAMclean/. The port is incomplete and unmaintained; see the report for details.</text>
+  <text x="24" y="364" class="note">Source components, not a working tracking result. The report describes failed map matching and motion-model-only updates.</text>
 </svg>

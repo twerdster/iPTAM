@@ -1,32 +1,65 @@
 # iPTAM
 
 [![C++ and Objective-C](https://img.shields.io/badge/code-C%2B%2B%20%7C%20Objective--C-00599C?logo=c%2B%2B&logoColor=white)](xPTAMclean)
-[![Platform: iOS 4 era, Xcode](https://img.shields.io/badge/platform-iOS%204%20era%20%C2%B7%20Xcode-555555?logo=apple&logoColor=white)](xPTAMclean/xPTAM.xcodeproj)
-[![Status: unmaintained](https://img.shields.io/badge/status-unmaintained-lightgrey)](#iptam)
+[![Historical Xcode project](https://img.shields.io/badge/platform-iOS%204%20era%20%C2%B7%20Xcode-555555?logo=apple&logoColor=white)](xPTAMclean/xPTAM.xcodeproj)
+[![Unmaintained](https://img.shields.io/badge/status-unmaintained-lightgrey)](#validation-and-limitations)
 
-**PTAM for the iPhone.** An attempted port of PTAM (Parallel Tracking and Mapping) by Georg Klein and
-David Murray to iOS, together with trimmed copies of the LibCVD (`iCVD`) and TooN (`iTooN`) libraries
-it depends on.
+iPTAM is an incomplete iPhone port of PTAM (Parallel Tracking and Mapping), the monocular camera
+tracking and mapping system by Georg Klein and David Murray. The repository combines C++ tracking
+and mapping code with an Objective-C camera/display layer and trimmed copies of LibCVD (`iCVD`)
+and TooN (`iTooN`). It preserves the port and its report rather than a maintained iOS application.
 
-![Explanatory illustration of the PTAM architecture in this port: camera frames, tracking thread, mapping thread, shared map and OpenGL ES display](docs/images/iptam-architecture.svg)
+![Schematic of camera capture, tracking, mapping and OpenGL ES display](docs/images/iptam-architecture.svg)
 
-*Explanatory illustration of the PTAM tracking/mapping structure, using component names from the
-source files in `xPTAMclean/`. It is not a screenshot, and it does not show that the port works.*
+*Architecture schematic using source component names. It is not a screenshot or evidence that the port runs.*
 
-> **NOTE:** This project is out of date and is not being maintained.
+## Source organization
 
-The original notes follow.
+[MyVideoBuffer.mm](xPTAMclean/MyVideoBuffer.mm) configures AVFoundation capture, converts frames
+for the tracker and passes them to the PTAM wrapper. The `iPTAM` directory contains the tracker,
+map maker, keyframes and map points; the display layer uses OpenGL ES. `MapMaker` inherits from
+`CVD::Thread` and its constructor calls `start()`. That source structure does not establish
+successful mapping, which the report explicitly says was failing. The intended outputs are
+camera pose and a sparse map displayed over camera frames, not a dense reconstruction or a
+supported file-export format.
 
-## Usage
+See the [original port report](iPTAM%20report.pdf) for the implementation discussion and historical
+limitations. Its results belong to the original experiment, not to a current device validation.
 
-The project can be downloaded as is and compiled in XCode. You will need a provisioned iPhone running iOS >4.0 to compile the software.The project should compile out of the box.
+## Historical build procedure
 
-Please be aware that this is not  intended to be a complete project in ANY sense and needs a huge amount of work in order to further its utility as an Augmented Reality application pose estimator. Please read [Report.pdf](iPTAM%20report.pdf) for more details on the port I have attempted.
+Open [xPTAM.xcodeproj](xPTAMclean/xPTAM.xcodeproj) in Xcode. The saved project targets the iOS 4.1
+SDK and 32-bit architectures, uses an iPhone Developer signing identity, and links UIKit,
+AVFoundation, OpenGL ES and other Apple frameworks. The original instructions required a
+provisioned iPhone running iOS later than 4.0.
 
-These build notes date from the iOS 4 era. The project has not been rebuilt or tested with
-current Xcode or iOS versions.
+Those settings are historical requirements. A current Xcode installation is not sufficient
+evidence of buildability: SDK availability, removed APIs, architecture settings and signing must
+be evaluated before attempting a port. There is no verified current installation command.
+
+## Validation and limitations
+
+Review date: 2026-11-12.
+
+This documentation revision reviewed the project settings, camera/display integration and original report. It did
+not compile the app, install it on an iPhone, test pose tracking or measure runtime performance.
+No automated test suite or current build record is included.
+
+The original report describes successful planar initialization followed by a failure to match map
+points. Recovery was disabled to continue motion-model updates; the report explicitly says that
+true closed-loop tracking and further map building were not taking place. It reports drift and
+scale problems. This is a historical failure account, not a newly reproduced result. The port is
+unmaintained, and camera calibration, tracking and resource use need independent validation on
+any target device. The diagram shows component structure, not successful operation of that chain.
 
 ## License
+
+The component paths are `xPTAMclean/iPTAM/`, `xPTAMclean/iCVD/` and `xPTAMclean/iTooN/`.
+No single license is established for the entire repository. The notices below do not establish
+terms for the wrapper/project files, including `xPTAMclean/Classes/`, `MyVideoBuffer.mm` and
+`xPTAM.xcodeproj`; no independent license declaration for those files was established in this
+review.
+The original component notices below are retained verbatim. The PTAM download URL is historical.
 
 All files in the iPTAM folder fall under this license agreement: http://www.robots.ox.ac.uk/~gk/PTAM/download.html
 
