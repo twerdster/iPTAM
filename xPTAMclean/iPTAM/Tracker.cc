@@ -1,6 +1,8 @@
 // Copyright 2008 Isis Innovation Limited
-#import <OpenGLES/ES1/gl.h>
-#import <OpenGLES/ES1/glext.h>
+#include "RenderCompat.h"
+#include <cstdio>
+#include <unistd.h>
+#include <stdexcept>
 
 
 
@@ -11,6 +13,10 @@
 #include "PatchFinder.h"
 #include "TrackerData.h"
 #include "globals.h"
+#ifdef IPTAM_MOBILE_PAPER
+#include "MobileConfig.h"
+#include "MobileFrontend.h"
+#endif
 
 #include "utility.h"
 //#include "gl_helpers.h"
@@ -23,6 +29,7 @@
 
 using namespace CVD;
 using namespace std;
+namespace { constexpr double kFinalPoseSigmaSquared = 16.0; }
 
 //The following is under the assumption that we are dealing with 
 //a screen that is 640 in width and 480 in height
@@ -63,7 +70,7 @@ mMap(m),
 mMapMaker(mm),
 mCamera(c),
 mRelocaliser(mMap, mCamera),
-mirSize(irVideoSize)
+mirSize(irVideoSize), textureHandle(0)
 {
 	mCurrentKF.bFixed = false;
 	//GUI.RegisterCommand("Reset", GUICommandCallBack, this);
@@ -76,6 +83,39 @@ mirSize(irVideoSize)
 	
 	// Most of the initialisation is done in Reset()
 	Reset();
+}
+
+Tracker::~Tracker() {
+    delete mpSBILastFrame;
+    delete mpSBIThisFrame;
+}
+
+double Tracker::InitialMedianDisplacement() const {
+    std::vector<double> movement;
+    for(const auto& trail:mlTrails) movement.push_back(std::sqrt(double((trail.irCurrentPos-trail.irInitialPos).mag_squared())));
+    if(movement.empty()) return 0;
+    std::nth_element(movement.begin(),movement.begin()+movement.size()/2,movement.end());
+    return movement[movement.size()/2];
+}
+
+int Tracker::MeasurementsFound() const {
+    int n=0; for(int i=0;i<LEVELS;++i) n += manMeasFound[i]; return n;
+}
+int Tracker::MeasurementsAttempted() const {
+    int n=0; for(int i=0;i<LEVELS;++i) n += manMeasAttempted[i]; return n;
+}
+
+void Tracker::SetFrameTimestamp(double timestamp) {
+    if(!std::isfinite(timestamp)) throw std::invalid_argument("Frame timestamp must be finite");
+    mdFrameIntervalRatio=1.0;
+    if(mbTimestampSet) {
+        double dt=timestamp-mdLastFrameTimestamp;
+        if(dt<=0) throw std::invalid_argument("Frame timestamps must increase");
+        if(dt>0.5) { mv6CameraVelocity=Zeros; mdMSDScaledVelocityMagnitude=0; }
+        else if(mdPreviousFrameInterval>0) mdFrameIntervalRatio=std::max(0.25,std::min(4.0,dt/mdPreviousFrameInterval));
+        mdPreviousFrameInterval=dt;
+    }
+    mdLastFrameTimestamp=timestamp; mbTimestampSet=true;
 }
 
 void Tracker::StartTracking() 
@@ -94,7 +134,15 @@ void Tracker::StopTracking()
 // It's always called in the Tracker's thread, often as a GUI command.
 void Tracker::Reset()
 {
-	NSLog(@"Tracker resetting...");
+	std::fprintf(stderr, "Tracker resetting...\n");
+	mRng.seed(42);
+#ifdef IPTAM_MOBILE_PAPER
+  if(!mpMobileInitializer) mpMobileInitializer.reset(new IPTAMMobile::MobileInitializer);
+  mpMobileInitializer->Reset(); mbMobileBlurFallback=false; mnMobileCoarseMatches=0;
+  mnMobileRSObservations=mnMobileRSCorrections=0; msMobileInitializationStage="not_started";
+#endif
+	mbNumericalFailure = false;
+	mnPoseInliers = 0;
 	mbDidCoarse = false;
 	mbUserPressedSpacebar = false;
 	mTrackingQuality = GOOD;
@@ -108,7 +156,10 @@ void Tracker::Reset()
 	mCurrentKF.mMeasurements.clear();
 	mnLastKeyFrameDropped = -20;
 	mnFrame=0;
+    mbTimestampSet=false; mdLastFrameTimestamp=0; mdPreviousFrameInterval=0; mdFrameIntervalRatio=1; mdLastKeyFrameTimestamp=-1e30;
 	mv6CameraVelocity = Zeros;
+    mse3CamFromWorld = SE3<>();
+    for(int i=0;i<LEVELS;++i) manMeasAttempted[i] = manMeasFound[i] = 0;
 	mbJustRecoveredSoUseCoarse = false;
 	
 	// Tell the MapMaker to reset itself.. 
@@ -119,7 +170,7 @@ void Tracker::Reset()
 	while(!mMapMaker.ResetDone())
 		usleep(10);
 	
-	NSLog(@"Tracker reset.");
+	std::fprintf(stderr, "Tracker reset.\n");
 }
 
 // TrackFrame is called by System.cc with each incoming video frame.
@@ -137,17 +188,26 @@ GLfloat transpose[]={
 
 void Tracker::TrackFrame(Image<byte> &imFrame, uint hnd,bool bDraw)
 {
-	mbDraw = bDraw;
+#ifdef IPTAM_MOBILE_PAPER
+  mbMobileBlurFallback=false; mnMobileCoarseMatches=0; mv6SBIRot=Zeros;
+  mnMobileRSObservations=mnMobileRSCorrections=0;
+#endif
+	mnPoseInliers = 0; // Recovery may fail without invoking TrackMap this frame.
+	if(mirSize.x < 64 || mirSize.y < 64 || imFrame.size() != mirSize) throw std::invalid_argument("Frame dimensions differ from calibrated tracker dimensions");
+#ifdef IPTAM_HEADLESS
+    bDraw = false;
+#endif
+    mbDraw = bDraw;
 	mMessageForUser.str("");   
 
-	static bool firstRun=true;
+	bool firstRun = mbDraw && textureHandle == 0;
 	
 	if (firstRun) {
 		glEnable(GL_TEXTURE_2D);    
-		NSLog(@"x:%i y:%i",mirSize.x,mirSize.y);
+		std::fprintf(stderr, "x:%d y:%d\n",mirSize.x,mirSize.y);
 		textureHandle=createNPOTTexture(mirSize.x,mirSize.y); 
 		glDisable(GL_TEXTURE_2D); 
-		firstRun=false;
+
 	}
 	
 	
@@ -156,7 +216,16 @@ void Tracker::TrackFrame(Image<byte> &imFrame, uint hnd,bool bDraw)
 	// Take the input video image, and convert it into the tracker's keyframe struct
 	// This does things like generate the image pyramid and find FAST corners
 	mCurrentKF.mMeasurements.clear();
+#ifdef IPTAM_MOBILE_PAPER
+  mCurrentKF.MakeKeyFrame_Lite(imFrame,false);
+#else
 	mCurrentKF.MakeKeyFrame_Lite(imFrame);
+#endif
+#ifdef IPTAM_MOBILE_PAPER
+  mCurrentKF.captureTimestamp=mdLastFrameTimestamp;
+  mCurrentKF.hasCaptureTimestamp=mbTimestampSet;
+  mCurrentKF.mobileBlurFallback=false;
+#endif
 	
 	// Update the small images for the rotation estimator
 	static double gvdSBIBlur = TrackerRotationEstimatorBlur;
@@ -233,7 +302,7 @@ void Tracker::TrackFrame(Image<byte> &imFrame, uint hnd,bool bDraw)
 	// Decide what to do - if there is a map, try to track the map ...
 	if(mMap.IsGood())
 	{
-		if(1)//mnLostFrames < 3)  // .. but only if we're not lost!
+		if(mnLostFrames < 3)  // .. but only if we're not lost!
 		{
 			if(mbUseSBIInit)
 				CalcSBIRotation();
@@ -242,6 +311,11 @@ void Tracker::TrackFrame(Image<byte> &imFrame, uint hnd,bool bDraw)
 			UpdateMotionModel();      // 
 			
 			AssessTrackingQuality();  //  Check if we're lost or if tracking is poor.
+#ifdef IPTAM_MOBILE_PAPER
+      UpdateMobileTemporalMeasurements();
+      if(mTrackingQuality==GOOD && !mbMobileBlurFallback && IPTAMMobile::Config().partialPoints)
+        mMapMaker.ObservePartialPoints(mCurrentKF);
+#endif
 			
 			{ // Provide some feedback for the user:
 				mMessageForUser << "Tracking Map, quality ";
@@ -256,8 +330,11 @@ void Tracker::TrackFrame(Image<byte> &imFrame, uint hnd,bool bDraw)
 			
 			// Heuristics to check if a key-frame should be added to the map:
 			if(mTrackingQuality == GOOD &&
+#ifdef IPTAM_MOBILE_PAPER
+         !mbMobileBlurFallback &&
+#endif
 			   mMapMaker.NeedNewKeyFrame(mCurrentKF) &&
-			   mnFrame - mnLastKeyFrameDropped > 20  &&
+			   (mbTimestampSet ? (mdLastFrameTimestamp-mdLastKeyFrameTimestamp > 0.3 && mnFrame-mnLastKeyFrameDropped > 2) : mnFrame-mnLastKeyFrameDropped > 20) &&
 			   mMapMaker.QueueSize() < 3)
 			{
 				mMessageForUser << " Adding key-frame.";
@@ -271,6 +348,9 @@ void Tracker::TrackFrame(Image<byte> &imFrame, uint hnd,bool bDraw)
 			{
 				TrackMap();
 				AssessTrackingQuality();
+#ifdef IPTAM_MOBILE_PAPER
+        UpdateMobileTemporalMeasurements();
+#endif
 			}
 		}
 		if(mbDraw)
@@ -279,6 +359,7 @@ void Tracker::TrackFrame(Image<byte> &imFrame, uint hnd,bool bDraw)
 	else // If there is no map, try to make one.
 		TrackForInitialMap(); 
 	
+	mMapMaker.ProcessPending();
 	// GUI interface
 	while(!mvQueuedCommands.empty())
 	{
@@ -302,6 +383,7 @@ bool Tracker::AttemptRecovery()
 	SE3<> se3Best = mRelocaliser.BestPose();
 	mse3CamFromWorld = mse3StartPos = se3Best;
 	mv6CameraVelocity = Zeros;
+
 	mbJustRecoveredSoUseCoarse = true;
 	return true;
 }
@@ -409,6 +491,31 @@ void Tracker::GUICommandHandler(string sCommand, string sParams)  // Called by t
 // What action TrackForInitialMap() takes depends on the mnInitialStage enum variable..
 void Tracker::TrackForInitialMap()
 {
+#ifdef IPTAM_MOBILE_PAPER
+  if(IPTAMMobile::Config().automaticInitialization) {
+    // This path is enabled explicitly; fixed first/second replay remains unchanged.
+    double time=mbTimestampSet ? mdLastFrameTimestamp : double(mnFrame);
+    if(mnInitialStage==TRAIL_TRACKING_NOT_STARTED) {
+      if(!mbUserPressedSpacebar) { msMobileInitializationStage="waiting_for_first_frame_request"; return; }
+      mbUserPressedSpacebar=false;
+      if(mpMobileInitializer->Begin(mCurrentKF,mCamera,time)) {
+        mnInitialStage=TRAIL_TRACKING_STARTED; msMobileInitializationStage="tracking_planar_view";
+      } else msMobileInitializationStage="insufficient_multiscale_features";
+    } else if(mnInitialStage==TRAIL_TRACKING_STARTED) {
+      mbUserPressedSpacebar=false;
+      auto result=mpMobileInitializer->Process(mCurrentKF,mCamera,time);
+      msMobileInitializationStage=result.stage+": "+result.reason;
+      if(result.ready) {
+        KeyFrame first=mpMobileInitializer->FirstKeyFrame();
+        if(mMapMaker.InitFromStereo(first,mCurrentKF,result.matches,mse3CamFromWorld,&result.secondFromFirst)) {
+          mnInitialStage=TRAIL_TRACKING_COMPLETE; msMobileInitializationStage="initialized";
+        } else msMobileInitializationStage="mapper_rejected_selected_hypothesis";
+      }
+    }
+    mMessageForUser << "Mobile auto initialization: " << msMobileInitializationStage;
+    return;
+  }
+#endif
 	// MiniPatch tracking threshhold.
 	static int gvnMaxSSD = TrackerMiniPatchMaxSSD;
 	MiniPatch::mnMaxSSD = gvnMaxSSD;
@@ -444,8 +551,12 @@ void Tracker::TrackForInitialMap()
 			for(list<Trail>::iterator i = mlTrails.begin(); i!=mlTrails.end(); i++)
 				vMatches.push_back(pair<ImageRef, ImageRef>(i->irInitialPos,
 															i->irCurrentPos));
-			mMapMaker.InitFromStereo(mFirstKF, mCurrentKF, vMatches, mse3CamFromWorld);  // This will take some time!
-			mnInitialStage = TRAIL_TRACKING_COMPLETE;
+			if(mMapMaker.InitFromStereo(mFirstKF, mCurrentKF, vMatches, mse3CamFromWorld))
+                mnInitialStage = TRAIL_TRACKING_COMPLETE;
+            else {
+                mnInitialStage = TRAIL_TRACKING_STARTED;
+                mMessageForUser << "Initialization failed. Continue slow sideways motion and press initialize again; first frame retained.";
+            }
 		}
 		else
 			mMessageForUser << "Translate the camera slowly sideways, and press spacebar again to perform stereo init." << endl;
@@ -475,6 +586,9 @@ void Tracker::TrailTracking_Start()
 		t.mPatch.SampleFromImage(vCornersAndSTScores[i].second, mCurrentKF.aLevels[0].im);
 		t.irInitialPos = vCornersAndSTScores[i].second;
 		t.irCurrentPos = t.irInitialPos;
+#ifdef IPTAM_MOBILE_PAPER
+    t.mobileCurrentPosition=vec(t.irCurrentPos);
+#endif
 		mlTrails.push_back(t);
 		nToAdd--;
     }
@@ -484,6 +598,9 @@ void Tracker::TrailTracking_Start()
 // Steady-state trail tracking: Advance from the previous frame, remove duds.
 int Tracker::TrailTracking_Advance()
 {
+#ifdef IPTAM_MOBILE_PAPER
+  if(IPTAMMobile::Config().coarseTracking) return TrailTrackingAdvanceMobile();
+#endif
 	GLfloat tempTrailVertices[4];
 	GLfloat tempTrailColours[8];
 	
@@ -502,7 +619,7 @@ int Tracker::TrailTracking_Advance()
 	MiniPatch BackwardsPatch;
 	Level &lCurrentFrame = mCurrentKF.aLevels[0];
 	Level &lPreviousFrame = mPreviousFrameKF.aLevels[0];
-	NSLog(@"number of trails:%i",mlTrails.size());
+	// Trail count is exposed in status; avoid per-frame logging.
 	
 	for(list<Trail>::iterator i = mlTrails.begin(); i!=mlTrails.end();)
     {
@@ -522,7 +639,7 @@ int Tracker::TrailTracking_Advance()
 				bFound = false;
 			
 			trail.irCurrentPos = irEnd;
-			nGoodTrails++;
+			if(bFound) nGoodTrails++;
 		}
 		
 		if(mbDraw)
@@ -562,10 +679,7 @@ int Tracker::TrailTracking_Advance()
 		}
 		i = next;
     }
-	if(mbDraw)
-		//glEnd();
-		
-		mPreviousFrameKF = mCurrentKF;
+	mPreviousFrameKF = mCurrentKF;
 	glDisableClientState(GL_VERTEX_ARRAY);
 	glDisableClientState(GL_COLOR_ARRAY);
 	return nGoodTrails;
@@ -583,22 +697,32 @@ int Tracker::TrailTracking_Advance()
 // class PatchFinder finds a projected MapPoint in the current-frame-KeyFrame.
 void Tracker::TrackMap()
 {
+#ifdef IPTAM_MOBILE_PAPER
+  if(IPTAMMobile::Config().coarseTracking) { TrackMapMobile(); return; }
+#endif
+  constexpr int nTrackingLevels=4; // Historical frontend has four active levels.
+	// A rejected pose solve invalidates this frame, not later observations.
+	mbNumericalFailure = false;
+	mnPoseInliers = 0;
 	if (mbUserPressedSpacebar) {
 		StopTracking();
+        return;
 	}
 	// Some accounting which will be used for tracking quality assessment:
-	for(int i=0; i<LEVELS; i++)
+	for(int i=0; i<nTrackingLevels; i++)
 		manMeasAttempted[i] = manMeasFound[i] = 0;
 	
+	mnVisible=mnWarpRejected=mnTemplateRejected=0;
 	// The Potentially-Visible-Set (PVS) is split into pyramid levels.
-	vector<TrackerData*> avPVS[LEVELS]; 
-	for(int i=0; i<LEVELS; i++)
+	vector<TrackerData*> avPVS[nTrackingLevels];
+	for(int i=0; i<nTrackingLevels; i++)
 		avPVS[i].reserve(500);
 	
 	// For all points in the map..
 	for(unsigned int i=0; i<mMap.vpPoints.size(); i++)
     {
-		MapPoint &p= *(mMap.vpPoints[i]); 
+		MapPoint &p= *(mMap.vpPoints[i]);
+        if(p.bBad) continue;
 		// Ensure that this map point has an associated TrackerData struct.
 		if(!p.pTData) p.pTData = new TrackerData(&p);   
 		TrackerData &TData = *p.pTData;
@@ -608,13 +732,14 @@ void Tracker::TrackMap()
 		if(!TData.bInImage)
 			continue;   
 		
+		++mnVisible;
 		// Calculate camera projection derivatives of this point.
 		TData.GetDerivsUnsafe(mCamera);
 		
 		// And check what the PatchFinder (included in TrackerData) makes of the mappoint in this view..
 		TData.nSearchLevel = TData.Finder.CalcSearchLevelAndWarpMatrix(TData.Point, mse3CamFromWorld, TData.m2CamDerivs);
-		if(TData.nSearchLevel == -1)
-			continue;   // a negative search pyramid level indicates an inappropriate warp for this view, so skip.
+		if(TData.nSearchLevel == -1) { ++mnWarpRejected;
+			continue; }   // a negative search pyramid level indicates an inappropriate warp for this view, so skip.
 		
 		// Otherwise, this point is suitable to be searched in the current image! Add to the PVS.
 		TData.bSearched = false;
@@ -624,8 +749,8 @@ void Tracker::TrackMap()
 	
 	// Next: A large degree of faffing about and deciding which points are going to be measured!
 	// First, randomly shuffle the individual levels of the PVS.
-	for(int i=0; i<LEVELS; i++)
-		random_shuffle(avPVS[i].begin(), avPVS[i].end());
+	for(int i=0; i<nTrackingLevels; i++)
+		std::shuffle(avPVS[i].begin(), avPVS[i].end(), mRng);
 	
 	// The next two data structs contain the list of points which will next 
 	// be searched for in the image, and then used in pose update.
@@ -660,40 +785,40 @@ void Tracker::TrackMap()
     };
 	
 	// If we do want to do a coarse stage, also check that there's enough high-level 
-	// PV map points. We use the lowest-res two pyramid levels (LEVELS-1 and LEVELS-2),
-	// with preference to LEVELS-1.
-	if(bTryCoarse && avPVS[LEVELS-1].size() + avPVS[LEVELS-2].size() > gvnCoarseMin )
+	// PV map points. We use the lowest-res two pyramid levels (nTrackingLevels-1 and nTrackingLevels-2),
+	// with preference to nTrackingLevels-1.
+	if(bTryCoarse && avPVS[nTrackingLevels-1].size() + avPVS[nTrackingLevels-2].size() > gvnCoarseMin )
     {
 		// Now, fill the vNextToSearch struct with an appropriate number of 
 		// TrackerDatas corresponding to coarse map points! This depends on how many
 		// there are in different pyramid levels compared to CoarseMin and CoarseMax.
 		
-		if(avPVS[LEVELS-1].size() <= nCoarseMax) 
-		{ // Fewer than CoarseMax in LEVELS-1? then take all of them, and remove them from the PVS list.
-			vNextToSearch = avPVS[LEVELS-1];
-			avPVS[LEVELS-1].clear();
+		if(avPVS[nTrackingLevels-1].size() <= nCoarseMax)
+		{ // Fewer than CoarseMax in nTrackingLevels-1? then take all of them, and remove them from the PVS list.
+			vNextToSearch = avPVS[nTrackingLevels-1];
+			avPVS[nTrackingLevels-1].clear();
 		}
 		else
 		{ // ..otherwise choose nCoarseMax at random, again removing from the PVS list.
 			for(unsigned int i=0; i<nCoarseMax; i++)
-				vNextToSearch.push_back(avPVS[LEVELS-1][i]);
-			avPVS[LEVELS-1].erase(avPVS[LEVELS-1].begin(), avPVS[LEVELS-1].begin() + nCoarseMax);
+				vNextToSearch.push_back(avPVS[nTrackingLevels-1][i]);
+			avPVS[nTrackingLevels-1].erase(avPVS[nTrackingLevels-1].begin(), avPVS[nTrackingLevels-1].begin() + nCoarseMax);
 		}
 		
-		// If didn't source enough from LEVELS-1, get some from LEVELS-2... same as above.
+		// If didn't source enough from nTrackingLevels-1, get some from nTrackingLevels-2... same as above.
 		if(vNextToSearch.size() < nCoarseMax)
 		{
 			unsigned int nMoreCoarseNeeded = nCoarseMax - vNextToSearch.size();
-			if(avPVS[LEVELS-2].size() <= nMoreCoarseNeeded)
+			if(avPVS[nTrackingLevels-2].size() <= nMoreCoarseNeeded)
 			{
-				vNextToSearch = avPVS[LEVELS-2];
-				avPVS[LEVELS-2].clear();
+				vNextToSearch.insert(vNextToSearch.end(), avPVS[nTrackingLevels-2].begin(), avPVS[nTrackingLevels-2].end());
+				avPVS[nTrackingLevels-2].clear();
 			}
 			else
 			{
 				for(unsigned int i=0; i<nMoreCoarseNeeded; i++)
-					vNextToSearch.push_back(avPVS[LEVELS-2][i]);
-				avPVS[LEVELS-2].erase(avPVS[LEVELS-2].begin(), avPVS[LEVELS-2].begin() + nMoreCoarseNeeded);
+					vNextToSearch.push_back(avPVS[nTrackingLevels-2][i]);
+				avPVS[nTrackingLevels-2].erase(avPVS[nTrackingLevels-2].begin(), avPVS[nTrackingLevels-2].begin() + nMoreCoarseNeeded);
 			}
 		}
 		// Now go and attempt to find these points in the image!
@@ -737,7 +862,7 @@ void Tracker::TrackMap()
 	// What patches shall we use this time? The high-level ones are quite important,
 	// so do all of these, with sub-pixel refinement.
 	{
-		int l = LEVELS - 1;
+		int l = nTrackingLevels - 1;
 		for(unsigned int i=0; i<avPVS[l].size(); i++)
 			avPVS[l][i]->ProjectAndDerivs(mse3CamFromWorld, mCamera);
 		SearchForPoints(avPVS[l], nFineRange, 8);
@@ -747,7 +872,7 @@ void Tracker::TrackMap()
 	
 	// All the others levels: Initially, put all remaining potentially visible patches onto vNextToSearch.
 	vNextToSearch.clear();
-	for(int l=LEVELS - 2; l>=0; l--)
+	for(int l=nTrackingLevels - 2; l>=0; l--)
 		for(unsigned int i=0; i<avPVS[l].size(); i++)
 			vNextToSearch.push_back(avPVS[l][i]);
 	
@@ -759,7 +884,7 @@ void Tracker::TrackMap()
 		nFinePatchesToUse = 0;
 	if((int) vNextToSearch.size() > nFinePatchesToUse)
     {
-		random_shuffle(vNextToSearch.begin(), vNextToSearch.end());
+		std::shuffle(vNextToSearch.begin(), vNextToSearch.end(), mRng);
 		vNextToSearch.resize(nFinePatchesToUse); // Chop!
     };
 	
@@ -810,7 +935,7 @@ void Tracker::TrackMap()
 		// Again, an M-Estimator hack beyond the fifth iteration.
 		double dOverrideSigma = 0.0;
 		if(iter > 5)
-			dOverrideSigma = 16.0;
+			dOverrideSigma = kFinalPoseSigmaSquared;
 		
 		// Calculate and update pose; also store update vector for linear iteration updates.
 		Vector<6> v6Update = 
@@ -818,8 +943,9 @@ void Tracker::TrackMap()
 		mse3CamFromWorld = SE3<>::exp(v6Update) * mse3CamFromWorld;
 		v6LastUpdate = v6Update;
     };
+	UpdatePoseInlierCount(vIterationSet);
 	
-	if(1)//mbDraw)
+	if(mbDraw)
     {
 		
 		glPointSize(6);
@@ -890,9 +1016,37 @@ void Tracker::TrackMap()
 		if(nNum > 20)
 		{
 			mCurrentKF.dSceneDepthMean = dSum/nNum;
-			mCurrentKF.dSceneDepthSigma = sqrt((dSumSq / nNum) - (mCurrentKF.dSceneDepthMean) * (mCurrentKF.dSceneDepthMean));
+			mCurrentKF.dSceneDepthSigma = sqrt(std::max(0.0, (dSumSq / nNum) - (mCurrentKF.dSceneDepthMean) * (mCurrentKF.dSceneDepthMean)));
 		}
 	}
+}
+
+// Count support at the pose actually exported, rather than the last solve's
+// linearization pose or its cached projection. Keep raw match counters,
+// found flags and mapper measurements unchanged.
+void Tracker::UpdatePoseInlierCount(const vector<TrackerData*>& measurements)
+{
+    mnPoseInliers = 0;
+    ATANCamera camera = mCamera;
+    for(const auto* data:measurements)
+    {
+        if(!data || !data->bFound || !std::isfinite(data->dSqrtInvNoise) || data->dSqrtInvNoise<=0)
+            continue;
+        const auto point = mse3CamFromWorld * data->Point.v3WorldPos;
+        if(!std::isfinite(point*point) || point[2]<=0.001)
+            continue;
+        const auto projected = camera.Project(project(point));
+        if(camera.Invalid() || !std::isfinite(projected*projected) ||
+           projected[0]<0 || projected[1]<0 || projected[0]>=mirSize.x || projected[1]>=mirSize.y)
+            continue;
+        const auto error = data->dSqrtInvNoise * (data->v2Found-projected);
+        const double squaredError = error*error;
+        if(!std::isfinite(squaredError)) continue;
+        double weight = Tukey::Weight(squaredError,kFinalPoseSigmaSquared);
+        if(TrackerMEstimator=="Cauchy") weight=Cauchy::Weight(squaredError,kFinalPoseSigmaSquared);
+        else if(TrackerMEstimator=="Huber") weight=Huber::Weight(squaredError,kFinalPoseSigmaSquared);
+        if(std::isfinite(weight) && weight>0) ++mnPoseInliers;
+    }
 }
 
 // Find points in the image. Uses the PatchFiner struct stored in TrackerData
@@ -904,10 +1058,18 @@ int Tracker::SearchForPoints(vector<TrackerData*> &vTD, int nRange, int nSubPixI
 		// First, attempt a search at pixel locations which are FAST corners.
 		// (PatchFinder::FindPatchCoarse)
 		TrackerData &TD = *vTD[i];
+		// A coarse pose update can move an already selected point out of view.
+		// Reject it before template work, counters, or conversion to integer pixels.
+		if(!TD.bInImage || !std::isfinite(TD.v2Image[0]) || !std::isfinite(TD.v2Image[1]))
+		{
+			TD.bInImage = TD.bPotentiallyVisible = TD.bFound = TD.bSearched = false;
+			continue;
+		}
 		PatchFinder &Finder = TD.Finder;
 		Finder.MakeTemplateCoarseCont(TD.Point);
 		if(Finder.TemplateBad())
 		{
+            ++mnTemplateRejected;
 			TD.bInImage = TD.bPotentiallyVisible = TD.bFound = false;
 			continue;
 		}
@@ -1044,7 +1206,9 @@ Vector<6> Tracker::CalcPoseUpdate(vector<TrackerData*> vTD, double dOverrideSigm
     }
 	
 	wls.compute();
-	return wls.get_mu();
+	auto update=wls.get_mu();
+    for(int i=0;i<6;++i) if(!std::isfinite(update[i])) { mbNumericalFailure=true; return makeVector(0.,0.,0.,0.,0.,0.); }
+    return update;
 }
 
 
@@ -1055,7 +1219,7 @@ Vector<6> Tracker::CalcPoseUpdate(vector<TrackerData*> vTD, double dOverrideSigm
 void Tracker::ApplyMotionModel()
 {
 	mse3StartPos = mse3CamFromWorld;
-	Vector<6> v6Velocity = mv6CameraVelocity;
+	Vector<6> v6Velocity = mdFrameIntervalRatio * mv6CameraVelocity;
 	if(mbUseSBIInit)
     {
 		v6Velocity.slice<3,3>() = mv6SBIRot.slice<3,3>();
@@ -1072,7 +1236,7 @@ void Tracker::UpdateMotionModel()
 {
 	SE3<> se3NewFromOld = mse3CamFromWorld * mse3StartPos.inverse();
 	Vector<6> v6Motion = SE3<>::ln(se3NewFromOld);
-	Vector<6> v6OldVel = mv6CameraVelocity;
+	Vector<6> v6OldVel = mdFrameIntervalRatio * mv6CameraVelocity;
 	
 	mv6CameraVelocity = 0.9 * (0.5 * v6Motion + 0.5 * v6OldVel);
 	mdVelocityMagnitude = sqrt(mv6CameraVelocity * mv6CameraVelocity);
@@ -1088,8 +1252,12 @@ void Tracker::UpdateMotionModel()
 // Time to add a new keyframe? The MapMaker handles most of this.
 void Tracker::AddNewKeyFrame()
 {
+#ifdef IPTAM_MOBILE_PAPER
+  if(mbMobileBlurFallback) return;
+#endif
 	mMapMaker.AddKeyFrame(mCurrentKF);
 	mnLastKeyFrameDropped = mnFrame;
+    mdLastKeyFrameTimestamp = mdLastFrameTimestamp;
 }
 
 // Some heuristics to decide if tracking is any good, for this frame.
@@ -1110,7 +1278,7 @@ void Tracker::AssessTrackingQuality()
 		if(i>=2) nLargeFound += manMeasFound[i];
     }
 	
-	if(nTotalFound == 0 || nTotalAttempted == 0)
+	if(mbNumericalFailure || nTotalFound < 10 || mnPoseInliers < 10 || nTotalAttempted == 0)
 		mTrackingQuality = BAD;
 	else
     {
@@ -1157,6 +1325,7 @@ void Tracker::CalcSBIRotation()
 	mpSBILastFrame->MakeJacs();
 	pair<SE2<>, double> result_pair;
 	result_pair = mpSBIThisFrame->IteratePosRelToTarget(*mpSBILastFrame, 6);
+	if(!std::isfinite(result_pair.second)) { mv6SBIRot=Zeros; return; }
 	SE3<> se3Adjust = SmallBlurryImage::SE3fromSE2(result_pair.first, mCamera);
 	mv6SBIRot = se3Adjust.ln();
 }
@@ -1170,3 +1339,165 @@ ImageRef TrackerData::irImageSize;  // Static member of TrackerData lives here
 
 
 
+
+#ifdef IPTAM_MOBILE_PAPER
+void Tracker::TrackMapMobile() {
+  mbNumericalFailure=false; mnPoseInliers=0; mnVisible=mnWarpRejected=mnTemplateRejected=0;
+  for(int l=0;l<LEVELS;++l) manMeasAttempted[l]=manMeasFound[l]=0;
+  if(mbUserPressedSpacebar) { StopTracking(); return; }
+  mbMobileBlurFallback=IPTAMMobile::RotationNeedsBlurFallback(mv6SBIRot);
+  mCurrentKF.mobileBlurFallback=mbMobileBlurFallback;
+  const int targetLevel=mbMobileBlurFallback ? 2 : 1;
+  mbDidCoarse=true; mbJustRecoveredSoUseCoarse=false;
+  const int gridColumns=8,gridRows=6;
+  vector<TrackerData*> cells[gridColumns*gridRows];
+  for(auto* point:mMap.vpPoints) {
+    if(!point||point->bBad) continue;
+    if(!point->pTData) point->pTData=new TrackerData(point);
+    TrackerData& data=*point->pTData; data.bFound=data.bSearched=false;
+    data.Project(mse3CamFromWorld,mCamera); if(!data.bInImage) continue;
+    ++mnVisible; data.GetDerivsUnsafe(mCamera);
+    data.Finder.SetMobileMatching(true,mbMobileBlurFallback);
+    data.nSearchLevel=data.Finder.CalcSearchLevelAndWarpMatrixAtLevel(*point,mse3CamFromWorld,data.m2CamDerivs,targetLevel);
+    if(data.nSearchLevel<0) {++mnWarpRejected;continue;}
+    int x=std::min(gridColumns-1,static_cast<int>(data.v2Image[0]*gridColumns/mirSize.x));
+    int y=std::min(gridRows-1,static_cast<int>(data.v2Image[1]*gridRows/mirSize.y));
+    cells[y*gridColumns+x].push_back(&data);
+  }
+  for(auto& cell:cells) std::shuffle(cell.begin(),cell.end(),mRng);
+  vector<TrackerData*> measurements;
+  const size_t maximum=static_cast<size_t>(std::max(0,IPTAMMobile::Config().maxTrackedPoints));
+  for(size_t pass=0;measurements.size()<maximum;++pass) {
+    bool added=false;
+    for(auto& cell:cells) if(pass<cell.size()&&measurements.size()<maximum) { measurements.push_back(cell[pass]);added=true; }
+    if(!added) break;
+  }
+  mnMobileCoarseMatches=SearchForPoints(measurements,4*LevelScale(targetLevel),12);
+  SE3<> predicted=mse3CamFromWorld;
+  if(mnMobileCoarseMatches>=10) {
+    for(int iteration=0;iteration<10;++iteration) {
+      for(auto* data:measurements) if(data->bFound) {
+        data->ProjectAndDerivs(mse3CamFromWorld,mCamera);
+        if(data->bFound) data->CalcJacobian();
+      }
+      Vector<6> update=CalcPoseUpdate(measurements,iteration>5?kFinalPoseSigmaSquared:0.,iteration==9);
+      if(mbNumericalFailure||!std::isfinite(update*update)) {mbNumericalFailure=true;break;}
+      SE3<> trial=SE3<>::exp(update)*mse3CamFromWorld;
+      Vector<6> logPose=trial.ln();
+      if(!std::isfinite(logPose*logPose)) {mbNumericalFailure=true;break;}
+      mse3CamFromWorld=trial;
+    }
+  }
+  if(mbNumericalFailure) mse3CamFromWorld=predicted;
+  UpdatePoseInlierCount(measurements);
+  mCurrentKF.se3CfromW=mse3CamFromWorld;
+  mCurrentKF.mMeasurements.clear();
+  double depth=0,depthSquared=0;int depthCount=0;
+  for(auto* data:measurements) if(data->bFound) {
+    data->ProjectAndDerivs(mse3CamFromWorld,mCamera);
+    if(!data->bFound) continue;
+    data->CalcJacobian();
+    Measurement measurement;
+    measurement.Source=Measurement::SRC_TRACKER;
+    measurement.nLevel=data->nSearchLevel; measurement.bSubPix=data->bDidSubPix;
+    measurement.v2RootPos=measurement.v2RawRootPos=measurement.v2BundleRootPos=data->v2Found;
+    measurement.hasRawPosition=true; measurement.m26PoseJacobian=data->m26Jacobian;
+    measurement.timestamp=mdLastFrameTimestamp;
+    if(mbTimestampSet&&data->mobileLastObservationTimed&&data->mobileLastObservedFrame==mnFrame-1) {
+      measurement.hasPrevious=true;measurement.previousTimestamp=data->mobileLastObservedTimestamp;
+      measurement.v2PreviousRootPos=data->mobileLastObservedPosition;
+    }
+    mCurrentKF.mMeasurements[&data->Point]=measurement;
+    double z=data->v3Cam[2]; if(std::isfinite(z)&&z>0) {depth+=z;depthSquared+=z*z;++depthCount;}
+  }
+  if(depthCount>20) {
+    mCurrentKF.dSceneDepthMean=depth/depthCount;
+    mCurrentKF.dSceneDepthSigma=std::sqrt(std::max(0.,depthSquared/depthCount-mCurrentKF.dSceneDepthMean*mCurrentKF.dSceneDepthMean));
+  }
+}
+
+void Tracker::UpdateMobileTemporalMeasurements() {
+  // Only actual consecutive successful video observations may establish timing.
+  if(mTrackingQuality!=GOOD||!mbTimestampSet||mbMobileBlurFallback) return;
+  for(auto& entry:mCurrentKF.mMeasurements) {
+    auto* data=entry.first->pTData;
+    if(!data) continue;
+    data->mobileLastObservedFrame=mnFrame; data->mobileLastObservedTimestamp=mdLastFrameTimestamp;
+    data->mobileLastObservationTimed=true; data->mobileLastObservedPosition=entry.second.v2RootPos;
+  }
+  if(!IPTAMMobile::Config().rollingShutter) return;
+  IPTAMMobile::RollingShutterCalibration calibration;
+  calibration.known=true;calibration.width=mirSize.x;calibration.height=mirSize.y;
+  calibration.axis=IPTAMMobile::Config().readoutAxis;
+  calibration.direction=IPTAMMobile::Config().readoutDirection;
+  calibration.readoutSeconds=IPTAMMobile::Config().readoutSeconds;
+  calibration.timestampFraction=IPTAMMobile::Config().exposureTimestampFraction;
+  std::string reason;
+  if(!calibration.Validate(reason)) return;
+  auto update=[&](KeyFrame* keyframe) {
+    if(!keyframe||!keyframe->hasCaptureTimestamp||keyframe->mobileBlurFallback) return;
+    bool adjacent=false;
+    for(auto& entry:mCurrentKF.mMeasurements) {
+      const Measurement& current=entry.second;
+      if(!current.hasPrevious||current.previousTimestamp!=keyframe->captureTimestamp) continue;
+      auto previous=keyframe->mMeasurements.find(entry.first);
+      if(previous==keyframe->mMeasurements.end()) continue;
+      previous->second.hasNext=true;previous->second.nextTimestamp=mdLastFrameTimestamp;
+      previous->second.v2NextRootPos=current.v2RootPos; adjacent=true;
+    }
+    if(!adjacent) return;
+    vector<IPTAMMobile::RollingShutterObservation> observations;
+    for(const auto& entry:keyframe->mMeasurements) {
+      const auto& m=entry.second;
+      if(!m.hasRawPosition||!m.hasPrevious||!m.hasNext) continue;
+      IPTAMMobile::RollingShutterObservation observation;
+      observation.pixel=m.v2RawRootPos;observation.poseJacobian=m.m26PoseJacobian;
+      observation.timestamp=m.timestamp;observation.previousTimestamp=m.previousTimestamp;observation.nextTimestamp=m.nextTimestamp;
+      observation.previousPixel=m.v2PreviousRootPos;observation.nextPixel=m.v2NextRootPos;
+      observation.hasPrevious=observation.hasNext=true;
+      observations.push_back(observation);
+    }
+    mnMobileRSObservations+=static_cast<int>(observations.size());
+    auto estimate=IPTAMMobile::RollingShutter::EstimateVelocity(observations,calibration);
+    if(!estimate.valid) return;
+    bool changed=false;
+    for(auto& entry:keyframe->mMeasurements) {
+      auto& measurement=entry.second; if(!measurement.hasRawPosition) continue;
+      Vector<2> corrected;
+      if(IPTAMMobile::RollingShutter::Correct(measurement.v2RawRootPos,measurement.m26PoseJacobian,estimate,calibration,corrected,reason)) {
+        measurement.v2BundleRootPos=corrected;measurement.rollingShutterCorrected=true;++mnMobileRSCorrections;changed=true;
+      }
+    }
+    if(changed) mMapMaker.NotifyMobileMeasurementsChanged(*keyframe);
+  };
+  for(auto* keyframe:mMap.vpKeyFrames) update(keyframe);
+}
+#endif
+
+#ifdef IPTAM_MOBILE_PAPER
+int Tracker::TrailTrackingAdvanceMobile() {
+  int good=0;
+  for(auto it=mlTrails.begin();it!=mlTrails.end();) {
+    const Vector<2> previous=it->mobileCurrentPosition;
+    PatchFinder forward;forward.SetMobileMatching(true);
+    forward.MakeMobileTemplateAtRoot(mPreviousFrameKF,1,previous);
+    bool valid=!forward.TemplateBad()&&forward.FindPatchCoarse(CVD::ir_rounded(previous),mCurrentKF,8);
+    Vector<2> current=previous;
+    if(valid) {forward.MakeSubPixTemplate();valid=forward.IterateSubPixToConvergence(mCurrentKF,15);current=forward.GetSubPixPos();}
+    if(valid) {
+      PatchFinder backward;backward.SetMobileMatching(true);
+      backward.MakeMobileTemplateAtRoot(mCurrentKF,1,current);
+      valid=!backward.TemplateBad()&&backward.FindPatchCoarse(CVD::ir_rounded(previous),mPreviousFrameKF,8);
+      if(valid) {
+        backward.MakeSubPixTemplate();valid=backward.IterateSubPixToConvergence(mPreviousFrameKF,15);
+        const Vector<2> error=backward.GetSubPixPos()-previous;
+        valid=valid&&std::isfinite(error*error)&&error*error<=2.;
+      }
+    }
+    if(valid) {it->mobileCurrentPosition=current;it->irCurrentPos=CVD::ir_rounded(current);++it;++good;}
+    else it=mlTrails.erase(it);
+  }
+  mPreviousFrameKF=mCurrentKF;
+  return good;
+}
+#endif

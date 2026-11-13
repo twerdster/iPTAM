@@ -24,6 +24,7 @@ struct KeyFrame;
 struct Map
 {
   Map();
+  ~Map();
   inline bool IsGood() {return bGood;}
   void Reset();
   
@@ -33,6 +34,10 @@ struct Map
   std::vector<MapPoint*> vpPoints;
   std::vector<MapPoint*> vpPointsTrash;
   std::vector<KeyFrame*> vpKeyFrames;
+#ifdef IPTAM_MOBILE_PAPER
+  // Inactive optimization views remain owned for patch pixels/relocalisation.
+  std::vector<KeyFrame*> vpRetainedKeyFrames;
+#endif
 
   bool bGood;
 };

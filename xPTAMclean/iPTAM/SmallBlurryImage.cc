@@ -6,6 +6,7 @@
 #include "se2.h"
 #include "Cholesky.h"
 #include "wls.h"
+#include <limits>
 
 using namespace CVD;
 using namespace std;
@@ -29,8 +30,7 @@ SmallBlurryImage::SmallBlurryImage()
 // of the above)
 void SmallBlurryImage::MakeFromKF(KeyFrame &kf, double dBlur)
 {
-  if(mirSize[0] == -1)
-    mirSize = kf.aLevels[3].im.size() / 2;
+  mirSize = kf.aLevels[3].im.size() / 2;
   mbMadeJacs = false;
   
   mimSmall.resize(mirSize);
@@ -188,8 +188,14 @@ pair<SE2<>,double> SmallBlurryImage::IteratePosRelToTarget(SmallBlurryImage &oth
 	for(int j=0; j<4; j++)
 	  for(int i=0; i<=j; i++)
 	    m4[j][i] = m4[i][j] = v10Triangle[v++];
-	Cholesky<4> chol(m4);
-	v4Update = chol.backsub(v4Accum);
+    // A textureless frame has singular translation/rotation constraints.
+    Cholesky<4> chol(m4);
+    if(!std::isfinite(chol.determinant()) || chol.determinant() <= 1e-12) {
+      result_pair.first = SE2<>();
+      result_pair.second = std::numeric_limits<double>::infinity();
+      return result_pair;
+    }
+    v4Update = chol.backsub(v4Accum);
       }
       
       SE2<> se2Update;
@@ -213,7 +219,7 @@ SE3<> SmallBlurryImage::SE3fromSE2(SE2<> se2, ATANCamera camera)
   // actually) until convergence. It might seem stupid doing this so
   // precisely when the whole SE2-finding is one big hack, but hey.
   
-  camera.SetImageSize(mirSize);
+  camera.SetImageSize(vec(mirSize));
   
   Vector<2> av2Turned[2];   // Our two warped points in pixels
   av2Turned[0] = vec(mirSize / 2) + se2 * vec(ImageRef(5,0));

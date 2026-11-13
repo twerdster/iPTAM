@@ -7,6 +7,9 @@
 #include "vector_image_ref.h"
 #include "image_interpolate.h"
 #include "Cholesky.h"
+#ifdef IPTAM_MOBILE_PAPER
+#include <array>
+#endif
 // tmmintrin.h contains SSE3<> instrinsics, used for the ZMSSD search at the bottom..
 // If this causes problems, just do #define CVD_HAVE_XMMINTRIN 0
 #if CVD_HAVE_XMMINTRIN
@@ -20,6 +23,7 @@ PatchFinder::PatchFinder(int nPatchSize)
   : mimTemplate(ImageRef(nPatchSize,nPatchSize))
 {
   mnPatchSize = nPatchSize;
+  mbTemplateBad = true;
   mirCenter = ImageRef(nPatchSize/2, nPatchSize/2);
   int nMaxSSDPerPixel = 500; // Pretty arbitrary... could make a GVar out of this.
   mnMaxSSD = mnPatchSize * mnPatchSize * nMaxSSDPerPixel;
@@ -37,6 +41,7 @@ int PatchFinder::CalcSearchLevelAndWarpMatrix(MapPoint &p,
   // Calc point pos in new view camera frame
   // Slightly dumb that we re-calculate this here when the tracker's already done this!
   Vector<3> v3Cam = se3CFromW * p.v3WorldPos;
+  if(!std::isfinite(v3Cam*v3Cam) || v3Cam[2] <= 0.001) { mbTemplateBad=true; return -1; }
   double dOneOverCameraZ = 1.0 / v3Cam[2];
   // Project the source keyframe's one-pixel-right and one-pixel-down vectors into the current view
   Vector<3> v3MotionRight = se3CFromW.get_rotation() * p.v3PixelRight_W;
@@ -50,7 +55,7 @@ int PatchFinder::CalcSearchLevelAndWarpMatrix(MapPoint &p,
   // This warp matrix is likely not appropriate for finding at level zero, which is 
   // the level at which it has been calculated. Vary the search level until the 
   // at that level would be appropriate (does not actually modify the matrix.)
-  while(dDet > 3 && mnSearchLevel < LEVELS-1)
+  while(dDet > 3 && mnSearchLevel < 3) // Legacy adaptive search has four active levels.
     {
       mnSearchLevel++;
       dDet *= 0.25;
@@ -58,7 +63,7 @@ int PatchFinder::CalcSearchLevelAndWarpMatrix(MapPoint &p,
   
   // Some warps are inappropriate, e.g. too near the camera, too far, or reflected, 
   // or zero area.. reject these!
-  if(dDet > 3 || dDet < 0.25)
+  if(!std::isfinite(dDet) || dDet > 3 || dDet < 0.25)
     {
       mbTemplateBad = true;
       return -1;
@@ -73,7 +78,7 @@ void PatchFinder::MakeTemplateCoarse(MapPoint &p,
 				     SE3<> se3CFromW,
 				     Matrix<2> &m2CamDerivs)
 {
-  CalcSearchLevelAndWarpMatrix(p, se3CFromW, m2CamDerivs);
+  if(CalcSearchLevelAndWarpMatrix(p, se3CFromW, m2CamDerivs)<0) return;
   MakeTemplateCoarseCont(p);
 };
 
@@ -82,6 +87,13 @@ void PatchFinder::MakeTemplateCoarseCont(MapPoint &p)
 {
   // Get the warping matrix appropriate for use with CVD::transform...
   Matrix<2> m2 = M2Inverse(mm2WarpInverse) * LevelScale(mnSearchLevel); 
+#ifdef IPTAM_MOBILE_PAPER
+  int sourceLevel = mbMobileMatching ? mnMobileSourceLevel : p.nSourceLevel;
+  Vector<2> sourceCenter = mbMobileMatching ? LevelNPos(LevelZeroPos(p.irCenter,p.nSourceLevel),sourceLevel) : vec(p.irCenter);
+  if(mbMobileMatching) m2 *= std::ldexp(1.0,p.nSourceLevel-sourceLevel);
+#else
+  int sourceLevel=p.nSourceLevel; Vector<2> sourceCenter=vec(p.irCenter);
+#endif
   // m2 now represents the number of pixels in the source image for one 
   // pixel of template image
   
@@ -90,7 +102,10 @@ void PatchFinder::MakeTemplateCoarseCont(MapPoint &p)
   // check that (a) this patchfinder is still working on the same map point and (b) the 
   // warping matrix has not changed much.
   
-  bool bNeedToRefreshTemplate = false;
+  bool bNeedToRefreshTemplate = mbTemplateBad;
+#ifdef IPTAM_MOBILE_PAPER
+  if(mbMobileMatching && mnLastMobileSourceLevel!=sourceLevel) bNeedToRefreshTemplate=true;
+#endif
   if(&p != mpLastTemplateMapPoint)
     bNeedToRefreshTemplate = true;
   // Still the same map point? Then compare warping matrix..
@@ -107,10 +122,10 @@ void PatchFinder::MakeTemplateCoarseCont(MapPoint &p)
     {
       int nOutside;  // Use CVD::transform to warp the patch according the the warping matrix m2
                      // This returns the number of pixels outside the source image hit, which should be zero.
-      nOutside = CVD::transform(p.pPatchSourceKF->aLevels[p.nSourceLevel].im, 
+      nOutside = CVD::transform(p.pPatchSourceKF->aLevels[sourceLevel].im,
 				mimTemplate, 
 				m2,
-				vec(p.irCenter),
+				sourceCenter,
 				vec(mirCenter)); 
       
       if(nOutside)
@@ -124,6 +139,9 @@ void PatchFinder::MakeTemplateCoarseCont(MapPoint &p)
       // the patch next time round.
       mpLastTemplateMapPoint = &p;
       mm2LastWarpMatrix = m2;
+#ifdef IPTAM_MOBILE_PAPER
+      mnLastMobileSourceLevel=sourceLevel;
+#endif
     }
 };
 
@@ -186,6 +204,26 @@ bool PatchFinder::FindPatchCoarse(ImageRef irPos, KeyFrame &kf, unsigned int nRa
   irPos = irPos / nLevelScale;
   nRange = (nRange + nLevelScale - 1) / nLevelScale;
   
+#ifdef IPTAM_MOBILE_PAPER
+  if(mbMobileMatching) {
+    // Exhaustive integer-pixel circle: independent of target corner detections.
+    // Quantized coarse positions can be up to half a target pixel away.
+    // Apply the tighter blur acceptance to the refined, unquantized match;
+    // retain the normal bound here so an exact fractional match can reach ESM.
+    double best=0.65; ImageRef bestPixel;
+    auto& image=kf.aLevels[mnSearchLevel].im;
+    // Protect mapping callers too: a bounded radius prevents accidental unbounded work.
+    int radius=std::min<int>(nRange,32);
+    for(int dy=-radius;dy<=radius;++dy) for(int dx=-radius;dx<=radius;++dx) {
+      if(dx*dx+dy*dy>radius*radius) continue;
+      ImageRef candidate=irPos+ImageRef(dx,dy);
+      double score=NormalizedSSDAtPoint(image,candidate);
+      if(score<best) {best=score;bestPixel=candidate;mbFound=true;}
+    }
+    if(mbFound) mv2CoarsePos=LevelZeroPos(bestPixel,mnSearchLevel);
+    return mbFound;
+  }
+#endif
   // Bounding box of search circle
   int nTop = irPos.y - nRange;
   int nBottomPlusOne = irPos.y + nRange + 1;
@@ -253,6 +291,9 @@ bool PatchFinder::FindPatchCoarse(ImageRef irPos, KeyFrame &kf, unsigned int nRa
 // (always unity, for each pixel) is not stored.
 void PatchFinder::MakeSubPixTemplate()
 {
+#ifdef IPTAM_MOBILE_PAPER
+  if(mbMobileMatching) { mv2SubPixPos=mv2CoarsePos; return; }
+#endif
   mimJacs.resize(mimTemplate.size() - ImageRef(2,2));
   Matrix<3> m3H = Zeros; // This stores jTj.
   ImageRef ir;
@@ -270,6 +311,9 @@ void PatchFinder::MakeSubPixTemplate()
   
   // Invert JTJ..
   Cholesky<3> chol(m3H);
+  if(!std::isfinite(chol.determinant()) || chol.determinant()<=1e-12) {
+    mbTemplateBad=true; mm3HInv=Zeros; return;
+  }
   mm3HInv = chol.get_inverse();
   // TOON2 Does not have a get_rank for cholesky
   // int nRank = chol.get_rank();
@@ -285,16 +329,21 @@ void PatchFinder::MakeSubPixTemplate()
 // if this is exceeded, consider the IC to have failed.
 bool PatchFinder::IterateSubPixToConvergence(KeyFrame &kf, int nMaxIts)
 {
+  if(mbTemplateBad) return false;
   const double dConvLimit = 0.03;
   bool bConverged = false;
   int nIts;
   for(nIts = 0; nIts < nMaxIts && !bConverged; nIts++)
     {
       double dUpdateSquared = IterateSubPix(kf);
-      if(dUpdateSquared < 0) // went off edge of image
+      if(!std::isfinite(dUpdateSquared) || dUpdateSquared < 0) // went off edge of image
 	return false;
-      if(dUpdateSquared < dConvLimit*dConvLimit)
-	return true;
+      if(dUpdateSquared < dConvLimit*dConvLimit) {
+#ifdef IPTAM_MOBILE_PAPER
+        if(mbMobileMatching) return MobileSubPixAccepted(kf);
+#endif
+        return true;
+      }
     }
   return false;
 }
@@ -305,6 +354,9 @@ bool PatchFinder::IterateSubPixToConvergence(KeyFrame &kf, int nMaxIts)
 // this is a special case where the mixing fractions for each pixel are identical.
 double PatchFinder::IterateSubPix(KeyFrame &kf)
 {
+#ifdef IPTAM_MOBILE_PAPER
+  if(mbMobileMatching) return MobileESMIteration(kf);
+#endif
   // Search level pos of patch center
   Vector<2> v2Center = LevelNPos(mv2SubPixPos, mnSearchLevel);
   BasicImage<byte> &im = kf.aLevels[mnSearchLevel].im;
@@ -551,3 +603,127 @@ int PatchFinder::ZMSSDAtPoint(CVD::BasicImage<CVD::byte> &im, const CVD::ImageRe
 
 
 
+
+#ifdef IPTAM_MOBILE_PAPER
+void PatchFinder::MakeMobileTemplateAtRoot(KeyFrame& frame,int level,const Vector<2>& rootPosition) {
+  mbTemplateBad=true;
+  if(level<0||level>=LEVELS||!std::isfinite(rootPosition*rootPosition)) return;
+  mnSearchLevel=level;mbMobileMatching=true;
+  Matrix<2> identity=Identity;
+  Vector<2> center=LevelNPos(rootPosition,level);
+  int outside=CVD::transform(frame.aLevels[level].im,mimTemplate,identity,center,vec(mirCenter));
+  if(outside) return;
+  mbTemplateBad=false;mpLastTemplateMapPoint=nullptr;mnLastMobileSourceLevel=-1;
+  MakeTemplateSums();
+}
+
+int PatchFinder::CalcSearchLevelAndWarpMatrixAtLevel(MapPoint& point,SE3<> pose,Matrix<2>& cameraDerivative,int targetLevel) {
+  // Obtain the continuous source-pixel -> root-target warp. The legacy routine
+  // may reject its preferred target level; the mobile source-level choice below
+  // is independently checked and does not use that rejection decision.
+  CalcSearchLevelAndWarpMatrix(point,pose,cameraDerivative);
+  Vector<3> cameraPoint=pose*point.v3WorldPos;
+  double determinant=mm2WarpInverse[0][0]*mm2WarpInverse[1][1]-mm2WarpInverse[0][1]*mm2WarpInverse[1][0];
+  double energy=0; for(int r=0;r<2;++r) for(int c=0;c<2;++c) energy+=mm2WarpInverse[r][c]*mm2WarpInverse[r][c];
+  if(!std::isfinite(cameraPoint*cameraPoint)||cameraPoint[2]<=.001||!std::isfinite(energy)||!std::isfinite(determinant)||determinant<=1e-10||energy/determinant>12||targetLevel<0||targetLevel>=LEVELS) {mbTemplateBad=true;return -1;}
+  double scale=std::sqrt(determinant);
+  int preferred=static_cast<int>(std::lround(point.nSourceLevel+targetLevel-std::log2(scale)));
+  mnMobileSourceLevel=std::max(0,std::min(LEVELS-1,preferred));
+  double adjusted=scale*std::ldexp(1.,mnMobileSourceLevel-point.nSourceLevel-targetLevel);
+  if(adjusted<.5||adjusted>2.0||!point.pPatchSourceKF||point.pPatchSourceKF->aLevels[mnMobileSourceLevel].im.size().x<mnPatchSize+2) {mbTemplateBad=true;return -1;}
+  mnSearchLevel=targetLevel; return targetLevel;
+}
+
+double PatchFinder::NormalizedSSDAtPoint(BasicImage<byte>& image,const ImageRef& center) const {
+  if(mbTemplateBad||!image.in_image_with_border(center,mnPatchSize/2+1)) return 2.;
+  double sum=0,sq=0,cross=0; int count=mnPatchSize*mnPatchSize;
+  ImageRef base=center-mirCenter;
+  for(int y=0;y<mnPatchSize;++y) for(int x=0;x<mnPatchSize;++x) {
+    double value=image[base+ImageRef(x,y)]; sum+=value;sq+=value*value;cross+=value*mimTemplate[y][x];
+  }
+  double vt=mnTemplateSumSq-double(mnTemplateSum)*mnTemplateSum/count;
+  double vi=sq-sum*sum/count;
+  if(vt<count*4.||vi<count*4.) return 2.;
+  double correlation=(cross-double(mnTemplateSum)*sum/count)/std::sqrt(vt*vi);
+  return std::isfinite(correlation) ? 2.*(1.-std::max(-1.,std::min(1.,correlation))) : 2.;
+}
+
+namespace {
+double MobilePixel(BasicImage<byte>& image,double x,double y) {
+  int ix=static_cast<int>(std::floor(x)),iy=static_cast<int>(std::floor(y));
+  double ax=x-ix,ay=y-iy;
+  return (1-ay)*((1-ax)*image[iy][ix]+ax*image[iy][ix+1])+ay*((1-ax)*image[iy+1][ix]+ax*image[iy+1][ix+1]);
+}
+}
+double PatchFinder::MobileESMIteration(KeyFrame& frame) {
+  Vector<2> center=LevelNPos(mv2SubPixPos,mnSearchLevel);
+  auto& image=frame.aLevels[mnSearchLevel].im;
+  auto inside=[&](const Vector<2>& p) {
+    return std::isfinite(p*p)&&p[0]>=mnPatchSize/2+2&&p[1]>=mnPatchSize/2+2&&p[0]<image.size().x-mnPatchSize/2-2&&p[1]<image.size().y-mnPatchSize/2-2;
+  };
+  if(!inside(center)) return -1.;
+  if(mnPatchSize!=8) return -1.; // The mobile paper profile specifies 8x8 patches.
+  const int n=(mnPatchSize-2)*(mnPatchSize-2);
+  struct Sample {double t,i;Vector<2> gt,gi;};std::array<Sample,36> samples;int sampleIndex=0;
+  double meanT=0,meanI=0,sqT=0,sqI=0;Vector<2> meanGT=Zeros,meanGI=Zeros;
+  for(int y=1;y<mnPatchSize-1;++y) for(int x=1;x<mnPatchSize-1;++x) {
+    double xx=center[0]+x-mirCenter.x,yy=center[1]+y-mirCenter.y;
+    Sample sample;sample.t=mimTemplate[y][x];sample.i=MobilePixel(image,xx,yy);
+    sample.gt=makeVector(.5*(mimTemplate[y][x+1]-mimTemplate[y][x-1]),.5*(mimTemplate[y+1][x]-mimTemplate[y-1][x]));
+    sample.gi=makeVector(.5*(MobilePixel(image,xx+1,yy)-MobilePixel(image,xx-1,yy)),.5*(MobilePixel(image,xx,yy+1)-MobilePixel(image,xx,yy-1)));
+    meanT+=sample.t;meanI+=sample.i;sqT+=sample.t*sample.t;sqI+=sample.i*sample.i;
+    meanGT+=sample.gt;meanGI+=sample.gi;samples[sampleIndex++]=sample;
+  }
+  meanT/=n;meanI/=n;meanGT/=n;meanGI/=n;
+  double sdT=std::sqrt(std::max(0.,sqT/n-meanT*meanT)),sdI=std::sqrt(std::max(0.,sqI/n-meanI*meanI));
+  if(sdT<2||sdI<2) return -1.;
+  Vector<2> contrastT=Zeros,contrastI=Zeros;
+  for(const auto& sample:samples) {contrastT+=(sample.t-meanT)*sample.gt;contrastI+=(sample.i-meanI)*sample.gi;}
+  contrastT/=n*sdT*sdT;contrastI/=n*sdI*sdI;
+  Matrix<2> hessian=Zeros;Vector<2> rhs=Zeros;double oldCost=0;
+  for(const auto& sample:samples) {
+    // Differentiating the mean and contrast normalization matters at coarse
+    // half-pixel phases. ESM averages both normalized image gradients.
+    const Vector<2> gradient=.5*((sample.gt-meanGT-(sample.t-meanT)*contrastT)/sdT+(sample.gi-meanGI-(sample.i-meanI)*contrastI)/sdI);
+    double residual=(sample.i-meanI)/sdI-(sample.t-meanT)/sdT;
+    hessian+=gradient.as_col()*gradient.as_row();rhs+=gradient*residual;oldCost+=residual*residual;
+  }
+  double determinant=hessian[0][0]*hessian[1][1]-hessian[0][1]*hessian[1][0];
+  double trace=hessian[0][0]+hessian[1][1];
+  if(!std::isfinite(determinant)||determinant<1e-8||trace*trace/determinant>1e5) return -1.;
+  Vector<2> update=M2Inverse(hessian)*rhs;double norm2=update*update;
+  if(!std::isfinite(norm2)||norm2>2.25) return -1.;
+  for(double fraction=1.;fraction>=1./64.;fraction*=.5) {
+    const Vector<2> trial=center-update*fraction;if(!inside(trial)) continue;
+    double sum=0,square=0;std::array<double,36> values;int valueIndex=0;
+    for(int y=1;y<mnPatchSize-1;++y) for(int x=1;x<mnPatchSize-1;++x) {
+      double value=MobilePixel(image,trial[0]+x-mirCenter.x,trial[1]+y-mirCenter.y);
+      values[valueIndex++]=value;sum+=value;square+=value*value;
+    }
+    double mean=sum/n,sd=std::sqrt(std::max(0.,square/n-mean*mean));if(sd<2.) continue;
+    double cost=0;for(int i=0;i<n;++i) {double residual=(values[i]-mean)/sd-(samples[i].t-meanT)/sdT;cost+=residual*residual;}
+    if(std::isfinite(cost)&&cost<=oldCost+1e-10) {
+      mv2SubPixPos-=update*(fraction*LevelScale(mnSearchLevel));return norm2*fraction*fraction;
+    }
+  }
+  return norm2<.03*.03 ? norm2 : -1.;
+}
+
+bool PatchFinder::MobileSubPixAccepted(KeyFrame& frame) const {
+  Vector<2> center=LevelNPos(mv2SubPixPos,mnSearchLevel);
+  auto& image=frame.aLevels[mnSearchLevel].im;
+  if(!std::isfinite(center*center)||center[0]<mnPatchSize/2+1||center[1]<mnPatchSize/2+1||center[0]>=image.size().x-mnPatchSize/2-1||center[1]>=image.size().y-mnPatchSize/2-1) return false;
+  Vector<2> movement=(mv2SubPixPos-mv2CoarsePos)/LevelScale(mnSearchLevel);
+  if(movement*movement>4.) return false;
+  double sum=0,sq=0,cross=0;const int n=mnPatchSize*mnPatchSize;
+  for(int y=0;y<mnPatchSize;++y) for(int x=0;x<mnPatchSize;++x) {
+    double pixel=MobilePixel(image,center[0]+x-mirCenter.x,center[1]+y-mirCenter.y);
+    sum+=pixel;sq+=pixel*pixel;cross+=pixel*mimTemplate[y][x];
+  }
+  double vi=sq-sum*sum/n,vt=mnTemplateSumSq-double(mnTemplateSum)*mnTemplateSum/n;
+  if(vi<n*4.||vt<n*4.) return false;
+  double correlation=(cross-double(mnTemplateSum)*sum/n)/std::sqrt(vi*vt);
+  return std::isfinite(correlation)&&2.*(1.-correlation)<mdMobileMaxNSSD;
+}
+
+#endif

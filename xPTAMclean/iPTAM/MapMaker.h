@@ -21,6 +21,28 @@
 #include "KeyFrame.h"
 #include "ATANCamera.h"
 #include <queue>
+#include <random>
+#ifdef IPTAM_MOBILE_PAPER
+#include <array>
+#include <deque>
+#include <cstdint>
+#include <limits>
+struct MappingDiagnostics {
+  enum Rejection { BackwardDepth, BehindDepth, DegenerateRay, OutsideLine,
+    BadTemplate, NoMatch, Subpixel, Cheirality, RejectionCount };
+  enum Stage { InsertKeyframe, RecentBundle, Refind, FullBundle, Retry, Cull, Partial, PartialPromotion, StageCount };
+  std::uint64_t epipolarAttempts=0, epipolarAccepted=0, invalidDepthIntervals=0;
+  std::uint64_t repairedDepthIntervals=0, budgetStops=0;
+  std::array<std::uint64_t,RejectionCount> rejected{};
+  std::array<std::uint64_t,StageCount> stageCalls{};
+  std::array<double,StageCount> stageMs{}, maxStageMs{};
+  std::uint64_t culledMeasurements=0, culledKeyframes=0, partialSeeded=0, partialPromoted=0;
+  std::uint64_t partialUpdates=0, partialRejected=0, idleStages=0, idleOverruns=0;
+  std::uint64_t observationBridgeRetentions=0, observationSupportRetentions=0, fixedLowSupportViews=0, bundleRSCorrections=0;
+  std::uint64_t deferredPartialQueued=0, deferredPartialCompleted=0, deferredPartialCancelled=0;
+  double idleMs=0, lastDepthMean=0, lastDepthSigma=0, lastDepthStart=0, lastDepthEnd=0;
+};
+#endif
 
 
 // Each MapPoint has an associated MapMakerData class
@@ -38,13 +60,33 @@ struct MapMakerData
 class MapMaker : protected CVD::Thread
 {
 public:
-  MapMaker(Map &m, const ATANCamera &cam);
+  MapMaker(Map &m, const ATANCamera &cam, bool threaded = false);
+  unsigned int NumericalFailureCount() const { return mnNumericalFailures; }
+  unsigned int RetainedSolveCount() const { return mnRetainedSolveStops; }
+  const std::string& LastNumericalFailure() const { return msLastNumericalFailure; }
+  void ProcessPending(); // Call once per frame when using serial mode.
+#ifdef IPTAM_MOBILE_PAPER
+  const MappingDiagnostics& Diagnostics() const { return mDiagnostics; }
+  static double SteadyTimeSeconds();
+  unsigned int ProcessIdleWork(double deadlineSeconds,double budgetMs);
+  bool ResourceLimitReached() const { return mbMobileResourceLimit; }
+  const std::string& ResourceLimitReason() const { return msMobileResourceReason; }
+  void CullMobileMap();
+  void ObservePartialPoints(KeyFrame& current);
+  void NotifyMobileMeasurementsChanged(KeyFrame&) { mbBundleConverged_Recent=mbBundleConverged_Full=false; }
+  std::size_t PartialPointCount() const;
+  std::size_t PendingPartialPromotionCount() const { return mPendingPartialPromotions.size(); }
+#endif
   ~MapMaker();
   
   // Make a map from scratch. Called by the tracker.
   bool InitFromStereo(KeyFrame &kFirst, KeyFrame &kSecond, 
 		      std::vector<std::pair<CVD::ImageRef, CVD::ImageRef> > &vMatches,
-		      SE3<> &se3CameraPos);
+		      SE3<> &se3CameraPos
+#ifdef IPTAM_MOBILE_PAPER
+                      , const SE3<>* selectedSecondFromFirst=nullptr
+#endif
+                      );
 
   bool InitFromStereo_OLD(KeyFrame &kFirst, KeyFrame &kSecond,  // EXPERIMENTAL HACK
 		      std::vector<std::pair<CVD::ImageRef, CVD::ImageRef> > &vMatches,
@@ -60,6 +102,46 @@ public:
   
 protected:
   
+  std::mt19937 mRng{42}; // Fixed seed: reproducible replay and reset.
+  unsigned int mnNumericalFailures=0;
+  unsigned int mnRetainedSolveStops=0;
+  std::string msLastNumericalFailure;
+  CVD::Image<Vector<2>> mimUnprojectCache;
+  bool mbThreaded;
+#ifdef IPTAM_MOBILE_PAPER
+  MappingDiagnostics mDiagnostics;
+  bool mbMobileResourceLimit=false;
+  std::string msMobileResourceReason;
+  struct PartialLandmark {
+    std::uint64_t id=0;
+    KeyFrame* source=nullptr;
+    Vector<2> sourceRoot=Zeros;
+    Vector<3> sourceRay=Zeros;
+    double inverseDepth=0,variance=std::numeric_limits<double>::infinity();
+    unsigned int observations=0,misses=0,age=0;
+    int sourceLevel=0;
+    double lastUpdateTime=std::numeric_limits<double>::quiet_NaN();
+  };
+  std::vector<PartialLandmark> mPartialLandmarks;
+  std::size_t mPartialObservationCursor=0;
+  struct PendingPartialPromotion {
+    KeyFrame* target=nullptr; // Owned by active map; cancelled before KF retirement/reset.
+    std::vector<std::uint64_t> candidates;
+    std::size_t next=0;
+  };
+  std::deque<PendingPartialPromotion> mPendingPartialPromotions;
+  std::uint64_t mNextPartialId=1;
+  void QueuePartialPromotion(KeyFrame& target);
+  void ProcessPendingPartialPromotion();
+  std::map<KeyFrame*,std::pair<KeyFrame*,SE3<>>> mRetainedPoseAnchors;
+  void SeedPartialPoints(KeyFrame& source);
+  std::size_t ObserveAndPromotePartialPoints(KeyFrame& current,bool promote,std::uint64_t onlyId=0);
+  void RefreshRetainedPoses();
+  void RefreshMobileRollingShutter(KeyFrame& frame);
+  std::size_t ActivePointLimit() const;
+  void CheckMobileResources();
+#endif
+  void ProcessOneIteration();
   Map &mMap;               // The map
   ATANCamera mCamera;      // Same as the tracker's camera: N.B. not a reference variable!
   virtual void run();      // The MapMaker thread code lives here
@@ -97,7 +179,7 @@ protected:
   double KeyFrameLinearDist(KeyFrame &k1, KeyFrame &k2);
   KeyFrame* ClosestKeyFrame(KeyFrame &k);
   std::vector<KeyFrame*> NClosestKeyFrames(KeyFrame &k, unsigned int N);
-  void RefreshSceneDepth(KeyFrame *pKF);
+  bool RefreshSceneDepth(KeyFrame *pKF);
   
 
   // GUI Interface:

@@ -65,7 +65,17 @@ class CalibImage;
 
 class ATANCamera {
  public:
+  // FOV is the historical model; its w=0 case is pinhole. Equidistant is
+  // the ideal r_image=theta model and requires the fifth parameter to be zero.
+  enum class ProjectionModel { FOV, Equidistant };
+
   ATANCamera(std::string sName);
+
+  void SetProjectionModel(ProjectionModel model);
+  ProjectionModel GetProjectionModel() const { return mProjectionModel; }
+
+  void SetParameters(const Vector<5>& normalizedParameters);
+  Vector<5> Parameters() const { return mgvvCameraParams; }
 
   // Image size get/set: updates the internal projection params to that target image size.
   void SetImageSize(Vector<2> v2ImageSize);
@@ -91,8 +101,8 @@ class ATANCamera {
   inline double OnePixelDist() { return mdOnePixelDist; }
   
   // The z=1 plane bounding box of what the camera can see
-  inline Vector<2> ImplaneTL(); 
-  inline Vector<2> ImplaneBR(); 
+  inline Vector<2> ImplaneTL() { return mvImplaneTL; }
+  inline Vector<2> ImplaneBR() { return mvImplaneBR; }
 
   // OpenGL helper function
   Matrix<4> MakeUFBLinearFrustumMatrix(double near, double far);
@@ -105,6 +115,7 @@ class ATANCamera {
   static const Vector<NUMTRACKERCAMPARAMETERS> mvDefaultParams;
   
  protected:
+  ProjectionModel mProjectionModel;
   Vector<NUMTRACKERCAMPARAMETERS> mgvvCameraParams; // The actual camera parameters
   
   Matrix<2, NUMTRACKERCAMPARAMETERS> GetCameraParameterDerivs();

@@ -4,13 +4,41 @@
 #include "SmallBlurryImage.h"
 #include "vision.h"
 #include "fast_corner.h"
+#ifdef IPTAM_MOBILE_PAPER
+#include "MobileFrontend.h"
+#include "MobileConfig.h"
+#endif
 
 using namespace CVD;
 using namespace std;
 
 
-void KeyFrame::MakeKeyFrame_Lite(BasicImage<byte> &im)
+KeyFrame::KeyFrame(const KeyFrame& rhs) : pSBI(nullptr) { *this = rhs; }
+KeyFrame& KeyFrame::operator=(const KeyFrame& rhs) {
+  if(this==&rhs) return *this;
+  delete pSBI; pSBI=nullptr;
+  se3CfromW=rhs.se3CfromW; bFixed=rhs.bFixed;
+  for(int i=0;i<LEVELS;++i) aLevels[i]=rhs.aLevels[i];
+  mMeasurements=rhs.mMeasurements;
+#ifdef IPTAM_MOBILE_PAPER
+  captureTimestamp=rhs.captureTimestamp; hasCaptureTimestamp=rhs.hasCaptureTimestamp;
+  mobileBlurFallback=rhs.mobileBlurFallback;mobileCornersReady=rhs.mobileCornersReady;
+#endif
+  dSceneDepthMean=rhs.dSceneDepthMean; dSceneDepthSigma=rhs.dSceneDepthSigma;
+  // SBI belongs to its keyframe and is generated lazily by MakeKeyFrame_Rest.
+  return *this;
+}
+KeyFrame::~KeyFrame() { delete pSBI; }
+
+void KeyFrame::MakeKeyFrame_Lite(BasicImage<byte> &im
+#ifdef IPTAM_MOBILE_PAPER
+                                  , bool detectFeatures
+#endif
+                                  )
 {
+#ifdef IPTAM_MOBILE_PAPER
+  mobileCornersReady=false;
+#endif
   // Perpares a Keyframe from an image. Generates pyramid levels, does FAST detection, etc.
   // Does not fully populate the keyframe struct, but only does the bits needed for the tracker;
   // e.g. does not perform FAST nonmax suppression. Things like that which are needed by the 
@@ -33,9 +61,14 @@ void KeyFrame::MakeKeyFrame_Lite(BasicImage<byte> &im)
       // .. and detect and store FAST corner points.
       // I use a different threshold on each level; this is a bit of a hack
       // whose aim is to balance the different levels' relative feature densities.
+      lev.bImplaneCornersCached = false;
+      lev.vImplaneCorners.clear();
       lev.vCorners.clear();
       lev.vCandidates.clear();
       lev.vMaxCorners.clear();
+#ifdef IPTAM_MOBILE_PAPER
+      if(!IPTAMMobile::Config().coarseTracking) {
+#endif
       if(i == 0)
 	fast_corner_detect_10(lev.im, lev.vCorners, 10);
       if(i == 1)
@@ -44,6 +77,9 @@ void KeyFrame::MakeKeyFrame_Lite(BasicImage<byte> &im)
 	fast_corner_detect_10(lev.im, lev.vCorners, 15);
       if(i == 3)
 	fast_corner_detect_10(lev.im, lev.vCorners, 10);
+#ifdef IPTAM_MOBILE_PAPER
+      }
+#endif
       
       // Generate row look-up-table for the FAST corner points: this speeds up 
       // finding close-by corner points later on.
@@ -56,6 +92,12 @@ void KeyFrame::MakeKeyFrame_Lite(BasicImage<byte> &im)
 	  lev.vCornerRowLUT.push_back(v);
 	}
     };
+#ifdef IPTAM_MOBILE_PAPER
+  if(IPTAMMobile::Config().coarseTracking&&detectFeatures) {
+    IPTAMMobile::DetectMultiscaleCorners(*this, MapMakerCandidateMinShiTomasiScore);
+    mobileCornersReady=true;
+  }
+#endif
 }
 
 void KeyFrame::MakeKeyFrame_Rest()
@@ -66,7 +108,15 @@ void KeyFrame::MakeKeyFrame_Rest()
 	static double gvdCandidateMinSTScore=MapMakerCandidateMinShiTomasiScore;
   
   // For each level...
-  for(int l=0; l<LEVELS; l++)
+#ifdef IPTAM_MOBILE_PAPER
+  if(IPTAMMobile::Config().coarseTracking) {
+    if(!mobileCornersReady) {
+      IPTAMMobile::DetectMultiscaleCorners(*this,MapMakerCandidateMinShiTomasiScore);
+      mobileCornersReady=true;
+    }
+  } else {
+#endif
+  for(int l=0; l<4; l++)
     {
       Level &lev = aLevels[l];
       // .. find those FAST corners which are maximal..
@@ -89,7 +139,11 @@ void KeyFrame::MakeKeyFrame_Rest()
 	}
     };
   
+#ifdef IPTAM_MOBILE_PAPER
+  }
+#endif
   // Also, make a SmallBlurryImage of the keyframe: The relocaliser uses these.
+  delete pSBI;
   pSBI = new SmallBlurryImage(*this);  
   // Relocaliser also wants the jacobians..
   pSBI->MakeJacs();
@@ -99,10 +153,14 @@ void KeyFrame::MakeKeyFrame_Rest()
 // to override CVD's reference-counting behaviour.
 Level& Level::operator=(const Level &rhs)
 {
+  if(this == &rhs) return *this;
   // Operator= should physically copy pixels, not use CVD's reference-counting image copy.
   im.resize(rhs.im.size());
   copy(rhs.im, im);
   
+  vCandidates = rhs.vCandidates;
+  vImplaneCorners = rhs.vImplaneCorners;
+  bImplaneCornersCached = rhs.bImplaneCornersCached;
   vCorners = rhs.vCorners;
   vMaxCorners = rhs.vMaxCorners;
   vCornerRowLUT = rhs.vCornerRowLUT;

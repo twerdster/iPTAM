@@ -1,5 +1,6 @@
 #include "thread.h"
 #include <time.h>
+#include <sched.h>
 
 
 namespace CVD {
@@ -85,7 +86,7 @@ void Thread::sleep(unsigned int milli)
 
 void Thread::yield()
 {
-  pthread_yield_np();
+  sched_yield();
 }
 
 bool Thread::init() 

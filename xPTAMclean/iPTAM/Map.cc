@@ -1,17 +1,26 @@
 // Copyright 2008 Isis Innovation Limited
 #include "Map.h"
 #include "MapPoint.h"
+#include "KeyFrame.h"
 
 Map::Map()
 {
   Reset();
 }
 
+Map::~Map() { Reset(); }
+
 void Map::Reset()
 {
   for(unsigned int i=0; i<vpPoints.size(); i++)
     delete vpPoints[i];
   vpPoints.clear();
+  for(auto* k:vpKeyFrames) delete k;
+  vpKeyFrames.clear();
+#ifdef IPTAM_MOBILE_PAPER
+  for(auto* k:vpRetainedKeyFrames) delete k;
+  vpRetainedKeyFrames.clear();
+#endif
   bGood = false;
   EmptyTrash();
 }

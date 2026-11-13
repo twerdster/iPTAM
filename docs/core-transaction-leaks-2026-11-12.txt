@@ -1,0 +1,27 @@
+Historical validation excerpt. See docs/RESULTS.md for current results.
+Evidence labels refer to local validation artifacts; raw logs and binaries are not redistributed.
+Machine-specific identifiers and paths are omitted.
+
+Apple leaks validation receipt, 2026-11-12.
+
+Complete diagnostic output is retained locally under this evidence label:
+evidence/memory/core-transaction-leaks-2026-11-12.txt
+SHA256: 4be1f382f9edff2add3d6a169f0b20d98685c4a83c109d1f3c98cd3d2a4c094d
+Bytes: 2133829
+
+Final report excerpt:
+Date/Time:       2026-11-12 19:22:42.796 +0200
+Launch Time:     2026-11-12 19:22:38.283 +0200
+OS Version:      macOS 15.1.1 (24B91)
+Report Version:  7
+Analysis Tool:   leaks (Xcode)
+Analysis Tool Version:  Xcode 16.1 (16B40)
+
+Physical footprint:         19.4M
+Physical footprint (peak):  37.3M
+Idle exit:                  untracked
+----
+
+leaks Report Version: 4.0, multi-line stacks
+Process TEST_PID: 732 nodes malloced for 61 KB
+Process TEST_PID: 0 leaks for 0 total leaked bytes.

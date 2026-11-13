@@ -30,6 +30,9 @@ protected:
   Map &mMap;
   ATANCamera mCamera;
   int mnBest;
+#ifdef IPTAM_MOBILE_PAPER
+  KeyFrame* mpBestKeyFrame=nullptr;
+#endif
   double mdBestScore;
   SE2<> mse2;
   SE3<> mse3Best;

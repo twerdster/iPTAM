@@ -15,6 +15,12 @@
 
 #include <fstream>
 #include <algorithm>
+#ifdef IPTAM_MOBILE_PAPER
+#include "MobileConfig.h"
+#include "MobileMappingBudget.h"
+#include "MobileMappingGeometry.h"
+#include <chrono>
+#endif
 
 #ifdef WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -26,24 +32,33 @@ using namespace std;
 
 // Constructor sets up internal reference variable to Map.
 // Most of the intialisation is done by Reset()..
-MapMaker::MapMaker(Map& m, const ATANCamera &cam)
-  : mMap(m), mCamera(cam)
+MapMaker::MapMaker(Map& m, const ATANCamera &cam, bool threaded)
+  : mbThreaded(threaded), mMap(m), mCamera(cam)
 {
   mbResetRequested = false;
+  mgvdWiggleScale=MapMakerWiggleScale;
   Reset();
-  start(); // This CVD::thread func starts the map-maker thread with function run()
+  if(mbThreaded) start(); // This CVD::thread func starts the map-maker thread with function run()
 		   //GUI.RegisterCommand("SaveMap", GUICommandCallBack, this);
   mgvdWiggleScale=MapMakerWiggleScale; // Default to 10cm between keyframes
 };
 
 void MapMaker::Reset()
 {
+#ifdef IPTAM_MOBILE_PAPER
+  mDiagnostics=MappingDiagnostics();
+  mbMobileResourceLimit=false;msMobileResourceReason.clear();
+  mPartialLandmarks.clear();mRetainedPoseAnchors.clear();mPartialObservationCursor=0;
+  mPendingPartialPromotions.clear();mNextPartialId=1;
+#endif
   // This is only called from within the mapmaker thread...
+  mRng.seed(42);
   mMap.Reset();
   mvFailureQueue.clear();
   while(!mqNewQueue.empty()) mqNewQueue.pop();
   mMap.vpKeyFrames.clear(); // TODO: actually erase old keyframes
-  mvpKeyFrameQueue.clear(); // TODO: actually erase old keyframes
+  for(auto* k:mvpKeyFrameQueue) delete k;
+  mvpKeyFrameQueue.clear();
   mbBundleRunning = false;
   mbBundleConverged_Full = true;
   mbBundleConverged_Recent = true;
@@ -56,64 +71,91 @@ void MapMaker::Reset()
 // what it's doing and reset, if required.
 #define CHECK_RESET if(mbResetRequested) {Reset(); continue;};
 
-void MapMaker::run()
-{
-  while(!shouldStop())  // ShouldStop is a CVD::Thread func which return true if the thread is told to exit.
-    {
-      CHECK_RESET;
-      sleep(5); // Sleep not really necessary, especially if mapmaker is busy
-      CHECK_RESET;
-      
-      // Handle any GUI commands encountered..
-      while(!mvQueuedCommands.empty())
-	{
-	  GUICommandHandler(mvQueuedCommands.begin()->sCommand, mvQueuedCommands.begin()->sParams);
-	  mvQueuedCommands.erase(mvQueuedCommands.begin());
-	}
-      
-      if(!mMap.IsGood())  // Nothing to do if there is no map yet!
-	continue;
-      
-      // From here on, mapmaker does various map-maintenance jobs in a certain priority
-      // Hierarchy. For example, if there's a new key-frame to be added (QueueSize() is >0)
-      // then that takes high priority.
-      
-      CHECK_RESET;
-      // Should we run local bundle adjustment?
-      if(!mbBundleConverged_Recent && QueueSize() == 0)  
-	BundleAdjustRecent();   
-      
-      CHECK_RESET;
-      // Are there any newly-made map points which need more measurements from older key-frames?
-      if(mbBundleConverged_Recent && QueueSize() == 0)
-	ReFindNewlyMade();  
-      
-      CHECK_RESET;
-      // Run global bundle adjustment?
-      if(mbBundleConverged_Recent && !mbBundleConverged_Full && QueueSize() == 0)
-	BundleAdjustAll();
-      
-      CHECK_RESET;
-      // Very low priorty: re-find measurements marked as outliers
-      if(mbBundleConverged_Recent && mbBundleConverged_Full && rand()%20 == 0 && QueueSize() == 0)
-	ReFindFromFailureQueue();
-      
-      CHECK_RESET;
-      HandleBadPoints();
-      
-      CHECK_RESET;
-      // Any new key-frames to be added?
-      if(QueueSize() > 0)
-	AddKeyFrameFromTopOfQueue(); // Integrate into map data struct, and process
-    }
+void MapMaker::run() {
+    while(!shouldStop()) { ProcessOneIteration(); sleep(5); }
 }
 
+void MapMaker::ProcessPending() {
+#ifdef IPTAM_MOBILE_PAPER
+    if(!mbThreaded && IPTAMMobile::Config().idleMapping) {
+      IPTAMMobile::ScopedMappingDeadline deadline(SteadyTimeSeconds()+std::max(0.,IPTAMMobile::Config().idleBudgetMs)/1000.);
+      ProcessOneIteration();return;
+    }
+#endif
+    if(!mbThreaded) ProcessOneIteration();
+}
+#ifdef IPTAM_MOBILE_PAPER
+double MapMaker::SteadyTimeSeconds() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+unsigned int MapMaker::ProcessIdleWork(double deadlineSeconds,double budgetMs) {
+  if(mbThreaded || !IPTAMMobile::Config().idleMapping || !mMap.IsGood() ||
+     !std::isfinite(deadlineSeconds) || !std::isfinite(budgetMs) || budgetMs<=0 || mbMobileResourceLimit) return 0;
+  const double start=SteadyTimeSeconds(),end=std::min(deadlineSeconds,start+budgetMs/1000.);
+  IPTAMMobile::ScopedMappingDeadline deadline(end);
+  unsigned int stages=0;
+  // Cooperative soft deadline: an existing bounded bundle/refind stage is an
+  // indivisible quantum. Never introduce a timer thread or race an abort flag.
+  while(stages<64 && SteadyTimeSeconds()<end && !IPTAMMobile::MappingBudgetExpired() && mMap.IsGood() && !mbMobileResourceLimit) {
+    if(QueueSize()==0 && mbBundleConverged_Recent && mbBundleConverged_Full && mqNewQueue.empty() && mPendingPartialPromotions.empty()) break;
+    ProcessOneIteration();++stages;
+  }
+  const double elapsed=(SteadyTimeSeconds()-start)*1000.;
+  mDiagnostics.idleStages+=stages;mDiagnostics.idleMs+=elapsed;
+  if(SteadyTimeSeconds()>end && stages)++mDiagnostics.idleOverruns;
+  return stages;
+}
+#endif
+
+void MapMaker::ProcessOneIteration() {
+    if(mbResetRequested) { Reset(); return; }
+    if(!mMap.IsGood()) return;
+#ifdef IPTAM_MOBILE_PAPER
+    auto timed=[this](MappingDiagnostics::Stage stage,auto operation) {
+      const auto start=std::chrono::steady_clock::now();operation();
+      const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+      ++mDiagnostics.stageCalls[stage];mDiagnostics.stageMs[stage]+=ms;
+      mDiagnostics.maxStageMs[stage]=std::max(mDiagnostics.maxStageMs[stage],ms);
+    };
+    if(QueueSize() > 0) timed(MappingDiagnostics::InsertKeyframe,[this]{AddKeyFrameFromTopOfQueue();});
+    else if(!mPendingPartialPromotions.empty()) timed(MappingDiagnostics::PartialPromotion,[this]{ProcessPendingPartialPromotion();});
+    else if(!mbBundleConverged_Recent) timed(MappingDiagnostics::RecentBundle,[this]{BundleAdjustRecent();});
+    else {
+        if(IPTAMMobile::Config().cullMeasurements) {
+          // The mobile paper omits historic measurement densification. Tracker
+          // observations and newly triangulated pairs remain the BA inputs.
+          while(!mqNewQueue.empty())mqNewQueue.pop();
+          mvFailureQueue.clear();
+        } else timed(MappingDiagnostics::Refind,[this]{ReFindNewlyMade();});
+        if(!mbBundleConverged_Full) timed(MappingDiagnostics::FullBundle,[this]{BundleAdjustAll();});
+        else if(!IPTAMMobile::Config().cullMeasurements && mRng()%20 == 0)
+          timed(MappingDiagnostics::Retry,[this]{ReFindFromFailureQueue();});
+    }
+#else
+    if(QueueSize() > 0) AddKeyFrameFromTopOfQueue();
+    else if(!mbBundleConverged_Recent) BundleAdjustRecent();
+    else {
+        ReFindNewlyMade();
+        if(!mbBundleConverged_Full) BundleAdjustAll();
+        else if(mRng()%20 == 0) ReFindFromFailureQueue();
+    }
+#endif
+    // As in the original mapper loop, retiring bad points is mandatory even
+    // while a bounded/nonconverged bundle stage remains pending.
+    HandleBadPoints();
+#ifdef IPTAM_MOBILE_PAPER
+    if(IPTAMMobile::Config().cullMeasurements || IPTAMMobile::Config().cullKeyframes)
+      timed(MappingDiagnostics::Cull,[this]{CullMobileMap();});
+    CheckMobileResources();
+#endif
+}
 
 // Tracker calls this to demand a reset
 void MapMaker::RequestReset()
 {
   mbResetDone = false;
   mbResetRequested = true;
+  if(!mbThreaded) Reset();
 }
 
 bool MapMaker::ResetDone()
@@ -155,7 +197,9 @@ MapMaker::~MapMaker()
   mbBundleAbortRequested = true;
   stop(); // makes shouldStop() return true
   cout << "Waiting for mapmaker to die.." << endl;
-  join();
+  if(mbThreaded) join();
+  for(auto* k:mvpKeyFrameQueue) delete k;
+  mvpKeyFrameQueue.clear();
   cout << " .. mapmaker has died." << endl;
 }
 
@@ -187,8 +231,13 @@ Vector<3> MapMaker::ReprojectPoint(SE3<> se3AfromB, const Vector<2> &v2A, const 
 bool MapMaker::InitFromStereo(KeyFrame &kF,
 			      KeyFrame &kS,
 			      vector<pair<ImageRef, ImageRef> > &vTrailMatches,
-			      SE3<> &se3TrackerPose)
+			      SE3<> &se3TrackerPose
+#ifdef IPTAM_MOBILE_PAPER
+                              , const SE3<>* selectedSecondFromFirst
+#endif
+                              )
 {
+  std::cout << "Initializing from " << vTrailMatches.size() << " image correspondences." << std::endl;
   mdWiggleScale = mgvdWiggleScale; // Cache this for the new map.
 
   mCamera.SetImageSize(kF.aLevels[0].im.size());
@@ -207,6 +256,15 @@ bool MapMaker::InitFromStereo(KeyFrame &kF,
   SE3<> se3;
   bool bGood;
   HomographyInit HomographyInit;
+#ifdef IPTAM_MOBILE_PAPER
+  if(selectedSecondFromFirst) {
+    se3=*selectedSecondFromFirst;
+    bGood=true;
+    const auto rotation=se3.get_rotation().get_matrix();
+    for(int r=0;r<3;++r)for(int c=0;c<3;++c)bGood=bGood&&std::isfinite(rotation[r][c]);
+    for(int i=0;i<3;++i)bGood=bGood&&std::isfinite(se3.get_translation()[i]);
+  } else
+#endif
   bGood = HomographyInit.Compute(vMatches, 5.0, se3);
   if(!bGood)
     {
@@ -216,7 +274,7 @@ bool MapMaker::InitFromStereo(KeyFrame &kF,
   
   // Check that the initialiser estimated a non-zero baseline
   double dTransMagn = sqrt(se3.get_translation() * se3.get_translation());
-  if(dTransMagn == 0)
+  if(!std::isfinite(dTransMagn) || dTransMagn < 1e-6)
     {
       cout << "  Estimated zero baseline from stereo pair, try again." << endl;
       return false;
@@ -241,6 +299,9 @@ bool MapMaker::InitFromStereo(KeyFrame &kF,
 
   for(unsigned int i=0; i<vMatches.size(); i++)
     {
+#ifdef IPTAM_MOBILE_PAPER
+      if(mMap.vpPoints.size()>=ActivePointLimit()) break;
+#endif
       MapPoint *p = new MapPoint();
       
       // Patch source stuff:
@@ -254,7 +315,6 @@ bool MapMaker::InitFromStereo(KeyFrame &kF,
       normalize(p->v3Center_NC);
       normalize(p->v3OneDownFromCenter_NC);
       normalize(p->v3OneRightFromCenter_NC);
-      p->RefreshPixelVectors();
 
       // Do sub-pixel alignment on the second image
       finder.MakeTemplateCoarseNoWarp(*p);
@@ -269,11 +329,12 @@ bool MapMaker::InitFromStereo(KeyFrame &kF,
       // Triangulate point:
       Vector<2> v2SecondPos = finder.GetSubPixPos();
       p->v3WorldPos = ReprojectPoint(se3, mCamera.UnProject(v2SecondPos), vMatches[i].v2CamPlaneFirst);
-      if(p->v3WorldPos[2] < 0.0)
+      if(!std::isfinite(p->v3WorldPos*p->v3WorldPos) || p->v3WorldPos[2] <= 0.001 || (se3*p->v3WorldPos)[2] <= 0.001)
        	{
  	  delete p; continue;
  	}
       
+      p->RefreshPixelVectors();
       // Not behind map? Good, then add to map.
       p->pMMData = new MapMakerData();
       mMap.vpPoints.push_back(p);
@@ -298,37 +359,48 @@ bool MapMaker::InitFromStereo(KeyFrame &kF,
   
   mMap.vpKeyFrames.push_back(pkFirst);
   mMap.vpKeyFrames.push_back(pkSecond);
+  if(mMap.vpPoints.size()<10) { Reset(); return false; }
   pkFirst->MakeKeyFrame_Rest();
   pkSecond->MakeKeyFrame_Rest();
   
-  for(int i=0; i<5; i++)
-    BundleAdjustAll();
+  for(int i=0; i<5; i++) { BundleAdjustAll(); if(mbResetRequested) { Reset(); return false; } }
 
   // Estimate the feature depth distribution in the first two key-frames
   // (Needed for epipolar search)
-  RefreshSceneDepth(pkFirst);
-  RefreshSceneDepth(pkSecond);
+  if(!RefreshSceneDepth(pkFirst) || !RefreshSceneDepth(pkSecond)) { Reset(); return false; }
   mdWiggleScaleDepthNormalized = mdWiggleScale / pkFirst->dSceneDepthMean;
 
 
+#ifdef IPTAM_MOBILE_PAPER
+  if(!IPTAMMobile::Config().partialPoints) {
+#endif
   AddSomeMapPoints(0);
   AddSomeMapPoints(3);
   AddSomeMapPoints(1);
   AddSomeMapPoints(2);
   
+#ifdef IPTAM_MOBILE_PAPER
+  }
+#endif
+
   mbBundleConverged_Full = false;
   mbBundleConverged_Recent = false;
   
-  while(!mbBundleConverged_Full)
+  int attempts = 0;
+  while(!mbBundleConverged_Full && attempts++ < 20)
     {
       BundleAdjustAll();
-      if(mbResetRequested)
-	return false;
+      if(mbResetRequested) { Reset(); return false; }
     }
   
+  if(!mbBundleConverged_Full || mMap.vpPoints.size()<10) { Reset(); return false; }
   // Rotate and translate the map so the dominant plane is at z=0:
   ApplyGlobalTransformationToMap(CalcPlaneAligner());
   mMap.bGood = true;
+#ifdef IPTAM_MOBILE_PAPER
+  if(IPTAMMobile::Config().partialPoints)SeedPartialPoints(*pkSecond);
+  if(IPTAMMobile::Config().cullMeasurements||IPTAMMobile::Config().cullKeyframes)CullMobileMap();
+#endif
   se3TrackerPose = pkSecond->se3CfromW;
   
   cout << "  MapMaker: made initial map with " << mMap.vpPoints.size() << " points." << endl;
@@ -386,8 +458,15 @@ void MapMaker::AddSomeMapPoints(int nLevel)
 
   ThinCandidates(kSrc, nLevel);
   
-  for(unsigned int i = 0; i<l.vCandidates.size(); i++)
-    AddPointEpipolar(kSrc, kTarget, nLevel, i);
+  size_t added = 0;
+  for(unsigned int i = 0; i<l.vCandidates.size() && mMap.vpPoints.size()<
+#ifdef IPTAM_MOBILE_PAPER
+      ActivePointLimit()
+#else
+      MaxMapPoints
+#endif
+      && added<MaxPointsPerLevelInsertion; i++)
+    if(AddPointEpipolar(kSrc, kTarget, nLevel, i)) ++added;
 };
 
 // Rotates/translates the whole map and all keyframes
@@ -396,6 +475,9 @@ void MapMaker::ApplyGlobalTransformationToMap(SE3<> se3NewFromOld)
   for(unsigned int i=0; i<mMap.vpKeyFrames.size(); i++)
     mMap.vpKeyFrames[i]->se3CfromW = mMap.vpKeyFrames[i]->se3CfromW * se3NewFromOld.inverse();
   
+#ifdef IPTAM_MOBILE_PAPER
+  RefreshRetainedPoses();
+#endif
   SO3<> so3Rot = se3NewFromOld.get_rotation();
   for(unsigned int i=0; i<mMap.vpPoints.size(); i++)
     {
@@ -411,6 +493,11 @@ void MapMaker::ApplyGlobalScaleToMap(double dScale)
   for(unsigned int i=0; i<mMap.vpKeyFrames.size(); i++)
     mMap.vpKeyFrames[i]->se3CfromW.get_translation() *= dScale;
   
+#ifdef IPTAM_MOBILE_PAPER
+  for(auto& record:mRetainedPoseAnchors)record.second.second.get_translation()*=dScale;
+  RefreshRetainedPoses();
+  for(auto& partial:mPartialLandmarks){partial.inverseDepth/=dScale;partial.variance/=(dScale*dScale);}
+#endif
   for(unsigned int i=0; i<mMap.vpPoints.size(); i++)
     {
       (*mMap.vpPoints[i]).v3WorldPos *= dScale;
@@ -426,6 +513,10 @@ void MapMaker::ApplyGlobalScaleToMap(double dScale)
 // be dealt with later, and return.
 void MapMaker::AddKeyFrame(KeyFrame &k)
 {
+#ifdef IPTAM_MOBILE_PAPER
+  CheckMobileResources();if(mbMobileResourceLimit)return;
+  if(IPTAMMobile::Config().idleMapping && mvpKeyFrameQueue.size()>=2)return;
+#endif
   KeyFrame *pK = new KeyFrame;
   *pK = k;
   pK->pSBI = NULL; // Mapmaker uses a different SBI than the tracker, so will re-gen its own
@@ -455,11 +546,22 @@ void MapMaker::AddKeyFrameFromTopOfQueue()
   
   // And maybe we missed some - this now adds to the map itself, too.
   ReFindInSingleKeyFrame(*pK);
-  
+#ifdef IPTAM_MOBILE_PAPER
+  if(IPTAMMobile::Config().partialPoints) {
+    // Feature completion/refind may already have consumed this soft quantum.
+    // Snapshot the eligible candidates before seeding and retain the promotion
+    // opportunity for a fresh bounded stage; never silently drop it on expiry.
+    QueuePartialPromotion(*pK);
+    SeedPartialPoints(*pK);
+  } else {
+#endif
   AddSomeMapPoints(3);       // .. and add more map points by epipolar search.
   AddSomeMapPoints(0);
   AddSomeMapPoints(1);
   AddSomeMapPoints(2);
+#ifdef IPTAM_MOBILE_PAPER
+  }
+#endif
   
   mbBundleConverged_Full = false;
   mbBundleConverged_Recent = false;
@@ -473,15 +575,21 @@ bool MapMaker::AddPointEpipolar(KeyFrame &kSrc,
 				int nLevel,
 				int nCandidate)
 {
-  static Image<Vector<2> > imUnProj;
-  static bool bMadeCache = false;
-  if(!bMadeCache)
+#ifdef IPTAM_MOBILE_PAPER
+  ++mDiagnostics.epipolarAttempts;
+  auto reject=[this](MappingDiagnostics::Rejection reason){++mDiagnostics.rejected[reason];return false;};
+#define EPIPOLAR_REJECT(reason) return reject(MappingDiagnostics::reason)
+#else
+#define EPIPOLAR_REJECT(reason) return false
+#endif
+  auto& imUnProj = mimUnprojectCache;
+  if(imUnProj.size() != kSrc.aLevels[0].im.size())
     {
       imUnProj.resize(kSrc.aLevels[0].im.size());
       ImageRef ir;
       do imUnProj[ir] = mCamera.UnProject(ir);
       while(ir.next(imUnProj.size()));
-      bMadeCache = true;
+
     }
   
   int nLevelScale = LevelScale(nLevel);
@@ -499,6 +607,19 @@ bool MapMaker::AddPointEpipolar(KeyFrame &kSrc,
   double dSigma = kSrc.dSceneDepthSigma;
   double dStartDepth = max(mdWiggleScale, dMean - dSigma);
   double dEndDepth = min(40 * mdWiggleScale, dMean + dSigma);
+#ifdef IPTAM_MOBILE_PAPER
+  const bool invalidLegacy=!std::isfinite(dStartDepth)||!std::isfinite(dEndDepth)||dEndDepth<=dStartDepth;
+  if(IPTAMMobile::Config().repairDepthIntervals) {
+    const auto interval=IPTAMMobile::EpipolarDepthInterval(dMean,dSigma,mdWiggleScale,true);
+    if(interval.repaired)++mDiagnostics.repairedDepthIntervals;
+    dStartDepth=interval.lower;dEndDepth=interval.upper;
+    if(!interval.valid) { ++mDiagnostics.invalidDepthIntervals; EPIPOLAR_REJECT(BackwardDepth); }
+  }
+  mDiagnostics.lastDepthMean=dMean;mDiagnostics.lastDepthSigma=dSigma;
+  mDiagnostics.lastDepthStart=dStartDepth;mDiagnostics.lastDepthEnd=dEndDepth;
+  if(invalidLegacy)
+    ++mDiagnostics.invalidDepthIntervals;
+#endif
   
   Vector<3> v3CamCenter_TC = kTarget.se3CfromW * kSrc.se3CfromW.inverse().get_translation(); // The camera end
   Vector<3> v3RayStart_TC = v3CamCenter_TC + dStartDepth * v3LineDirn_TC;                               // the far-away end
@@ -506,8 +627,8 @@ bool MapMaker::AddPointEpipolar(KeyFrame &kSrc,
 
   
   if(v3RayEnd_TC[2] <= v3RayStart_TC[2])  // it's highly unlikely that we'll manage to get anything out if we're facing backwards wrt the other camera's view-ray
-    return false;
-  if(v3RayEnd_TC[2] <= 0.0 )  return false;
+    { EPIPOLAR_REJECT(BackwardDepth); }
+  if(v3RayEnd_TC[2] <= 0.0 )  { EPIPOLAR_REJECT(BehindDepth); }
   if(v3RayStart_TC[2] <= 0.0)
     v3RayStart_TC += v3LineDirn_TC * (0.001 - v3RayStart_TC[2] / v3LineDirn_TC[2]);
   
@@ -518,7 +639,7 @@ bool MapMaker::AddPointEpipolar(KeyFrame &kSrc,
   if(v2AlongProjectedLine * v2AlongProjectedLine < 0.00000001)
     {
       cout << "v2AlongProjectedLine too small." << endl;
-      return false;
+      EPIPOLAR_REJECT(DegenerateRay);
     }
   normalize(v2AlongProjectedLine);
   Vector<2> v2Normal;
@@ -527,7 +648,7 @@ bool MapMaker::AddPointEpipolar(KeyFrame &kSrc,
   
   double dNormDist = v2A * v2Normal;
   if(fabs(dNormDist) > mCamera.LargestRadiusInImage() )
-    return false;
+    { EPIPOLAR_REJECT(OutsideLine); }
   
   double dMinLen = min(v2AlongProjectedLine * v2A, v2AlongProjectedLine * v2B) - 0.05;
   double dMaxLen = max(v2AlongProjectedLine * v2A, v2AlongProjectedLine * v2B) + 0.05;
@@ -539,7 +660,7 @@ bool MapMaker::AddPointEpipolar(KeyFrame &kSrc,
   // Find current-frame corners which might match this
   PatchFinder Finder;
   Finder.MakeTemplateCoarseNoWarp(kSrc, nLevel, irLevelPos);
-  if(Finder.TemplateBad())  return false;
+  if(Finder.TemplateBad())  { EPIPOLAR_REJECT(BadTemplate); }
   
   vector<Vector<2> > &vv2Corners = kTarget.aLevels[nLevel].vImplaneCorners;
   vector<ImageRef> &vIR = kTarget.aLevels[nLevel].vCorners;
@@ -570,14 +691,14 @@ bool MapMaker::AddPointEpipolar(KeyFrame &kSrc,
 	}
     } 
   
-  if(nBest == -1)   return false;   // Nothing found.
+  if(nBest == -1)   { EPIPOLAR_REJECT(NoMatch); }   // Nothing found.
   
   //  Found a likely candidate along epipolar ray
   Finder.MakeSubPixTemplate();
   Finder.SetSubPixPos(LevelZeroPos(vIR[nBest], nLevel));
   bool bSubPixConverges = Finder.IterateSubPixToConvergence(kTarget,10);
   if(!bSubPixConverges)
-    return false;
+    { EPIPOLAR_REJECT(Subpixel); }
   
   // Now triangulate the 3d point...
   Vector<3> v3New;
@@ -586,6 +707,7 @@ bool MapMaker::AddPointEpipolar(KeyFrame &kSrc,
 		   mCamera.UnProject(v2RootPos), 
 		   mCamera.UnProject(Finder.GetSubPixPos()));
   
+  if(!std::isfinite(v3New*v3New) || (kSrc.se3CfromW*v3New)[2] <= 0.001 || (kTarget.se3CfromW*v3New)[2] <= 0.001) { EPIPOLAR_REJECT(Cheirality); }
   MapPoint *pNew = new MapPoint;
   pNew->v3WorldPos = v3New;
   pNew->pMMData = new MapMakerData();
@@ -619,6 +741,10 @@ bool MapMaker::AddPointEpipolar(KeyFrame &kSrc,
   kTarget.mMeasurements[pNew] = m;
   pNew->pMMData->sMeasurementKFs.insert(&kSrc);
   pNew->pMMData->sMeasurementKFs.insert(&kTarget);
+#ifdef IPTAM_MOBILE_PAPER
+  ++mDiagnostics.epipolarAccepted;
+#endif
+#undef EPIPOLAR_REJECT
   return true;
 }
 
@@ -643,7 +769,7 @@ vector<KeyFrame*> MapMaker::NClosestKeyFrames(KeyFrame &k, unsigned int N)
     }
   if(N > vKFandScores.size())
     N = vKFandScores.size();
-  partial_sort(vKFandScores.begin(), vKFandScores.begin() + N, vKFandScores.end());
+  std::stable_sort(vKFandScores.begin(), vKFandScores.end(), [](const pair<double,KeyFrame*>& a,const pair<double,KeyFrame*>& b){return a.first<b.first;});
   
   vector<KeyFrame*> vResult;
   for(unsigned int i=0; i<N; i++)
@@ -674,13 +800,16 @@ double MapMaker::DistToNearestKeyFrame(KeyFrame &kCurrent)
 {
   KeyFrame *pClosest = ClosestKeyFrame(kCurrent);
   double dDist = KeyFrameLinearDist(kCurrent, *pClosest);
+#ifdef IPTAM_MOBILE_PAPER
+  if(IPTAMMobile::Config().cullKeyframes)for(auto* frame:mMap.vpRetainedKeyFrames)
+    dDist=std::min(dDist,KeyFrameLinearDist(kCurrent,*frame));
+#endif
   return dDist;
 }
 
 bool MapMaker::NeedNewKeyFrame(KeyFrame &kCurrent)
 {
-  KeyFrame *pClosest = ClosestKeyFrame(kCurrent);
-  double dDist = KeyFrameLinearDist(kCurrent, *pClosest);
+  double dDist = DistToNearestKeyFrame(kCurrent);
   dDist *= (1.0 / kCurrent.dSceneDepthMean);
   
   if(dDist > MapMakerMaxKFDistWiggleMult * mdWiggleScaleDepthNormalized)
@@ -762,6 +891,10 @@ void MapMaker::BundleAdjustRecent()
 // Common bundle adjustment code. This creates a bundle-adjust instance, populates it, and runs it.
 void MapMaker::BundleAdjust(set<KeyFrame*> sAdjustSet, set<KeyFrame*> sFixedSet, set<MapPoint*> sMapPoints, bool bRecent)
 {
+#ifdef IPTAM_MOBILE_PAPER
+  if(IPTAMMobile::Config().rollingShutter)for(auto* frame:mMap.vpKeyFrames)
+    if(sAdjustSet.count(frame)||sFixedSet.count(frame))RefreshMobileRollingShutter(*frame);
+#endif
   Bundle b(mCamera);   // Our bundle adjuster
   mbBundleRunning = true;
   mbBundleRunningIsRecent = bRecent;
@@ -773,57 +906,70 @@ void MapMaker::BundleAdjust(set<KeyFrame*> sAdjustSet, set<KeyFrame*> sFixedSet,
   map<KeyFrame*, int> mView_BundleID;
   map<int, KeyFrame*> mBundleID_View;
   
-  // Add the keyframes' poses to the bundle adjuster. Two parts: first nonfixed, then fixed.
-  for(set<KeyFrame*>::iterator it = sAdjustSet.begin(); it!= sAdjustSet.end(); it++)
-    {
-      int nBundleID = b.AddCamera((*it)->se3CfromW, (*it)->bFixed);
-      mView_BundleID[*it] = nBundleID;
-      mBundleID_View[nBundleID] = *it;
+  // Preserve insertion order: pointer-ordered sets/maps vary with allocator
+  // layout and otherwise change numerical accumulation and replay results.
+  for(auto* k:mMap.vpKeyFrames) if(sAdjustSet.count(k)) {
+    bool fixed=k->bFixed;
+#ifdef IPTAM_MOBILE_PAPER
+    if(IPTAMMobile::Config().cullMeasurements||IPTAMMobile::Config().cullKeyframes) {
+      unsigned int support=0;for(const auto& measurement:k->mMeasurements)
+        if(!measurement.first->bBad&&sMapPoints.count(measurement.first))++support;
+      if(!fixed&&support<3){fixed=true;++mDiagnostics.fixedLowSupportViews;}
     }
-  for(set<KeyFrame*>::iterator it = sFixedSet.begin(); it!= sFixedSet.end(); it++)
-    {
-      int nBundleID = b.AddCamera((*it)->se3CfromW, true);
-      mView_BundleID[*it] = nBundleID;
-      mBundleID_View[nBundleID] = *it;
+#endif
+    int id=b.AddCamera(k->se3CfromW,fixed);
+    mView_BundleID[k]=id; mBundleID_View[id]=k;
+  }
+  for(auto* k:mMap.vpKeyFrames) if(sFixedSet.count(k)) {
+    int id=b.AddCamera(k->se3CfromW,true);
+    mView_BundleID[k]=id; mBundleID_View[id]=k;
+  }
+  for(auto* p:mMap.vpPoints) if(sMapPoints.count(p)) {
+    int id=b.AddPoint(p->v3WorldPos);
+    mPoint_BundleID[p]=id; mBundleID_Point[id]=p;
+  }
+  for(auto* k:mMap.vpKeyFrames) {
+    if(!mView_BundleID.count(k)) continue;
+    std::vector<std::pair<int,Measurement*>> ordered;
+    for(auto& measurement:k->mMeasurements) {
+      auto point=mPoint_BundleID.find(measurement.first);
+      if(point!=mPoint_BundleID.end()) ordered.emplace_back(point->second,&measurement.second);
     }
-  
-  // Add the points' 3D position
-  for(set<MapPoint*>::iterator it = sMapPoints.begin(); it!=sMapPoints.end(); it++)
-    {
-      int nBundleID = b.AddPoint((*it)->v3WorldPos);
-      mPoint_BundleID[*it] = nBundleID;
-      mBundleID_Point[nBundleID] = *it;
+    std::sort(ordered.begin(),ordered.end(),[](const std::pair<int,Measurement*>& a,const std::pair<int,Measurement*>& b){return a.first<b.first;});
+    for(const auto& measurement:ordered) {
+      auto& m=*measurement.second;
+      b.AddMeas(mView_BundleID[k],measurement.first,
+#ifdef IPTAM_MOBILE_PAPER
+                m.BundlePosition(),
+#else
+                m.v2RootPos,
+#endif
+                LevelScale(m.nLevel)*LevelScale(m.nLevel));
     }
-  
-  // Add the relevant point-in-keyframe measurements
-  for(unsigned int i=0; i<mMap.vpKeyFrames.size(); i++)
-    {
-      if(mView_BundleID.count(mMap.vpKeyFrames[i]) == 0)
-	continue;
-      
-      int nKF_BundleID = mView_BundleID[mMap.vpKeyFrames[i]];
-      for(meas_it it= mMap.vpKeyFrames[i]->mMeasurements.begin();
-	  it!= mMap.vpKeyFrames[i]->mMeasurements.end();
-	  it++)
-	{
-	  if(mPoint_BundleID.count(it->first) == 0)
-	    continue;
-	  int nPoint_BundleID = mPoint_BundleID[it->first];
-	  b.AddMeas(nKF_BundleID, nPoint_BundleID, it->second.v2RootPos, LevelScale(it->second.nLevel) * LevelScale(it->second.nLevel));
-	}
-    }
-  
+  }
+
   // Run the bundle adjuster. This returns the number of successful iterations
   int nAccepted = b.Compute(&mbBundleAbortRequested);
+#ifdef IPTAM_MOBILE_PAPER
+  if(b.BudgetStopped())++mDiagnostics.budgetStops;
+#endif
+  if(b.StoppedAtAcceptedEstimate()) {
+    ++mnRetainedSolveStops;
+    msLastNumericalFailure=b.FailureReason();
+    std::cerr << "Bundle bounded stop: " << msLastNumericalFailure << std::endl;
+  }
   
   if(nAccepted < 0)
     {
-      // Crap: - LM Ran into a serious problem!
-      // This is probably because the initial stereo was messed up.
-      // Get rid of this map and start again! 
-      cout << "!! MapMaker: Cholesky failure in bundle adjust. " << endl
-	   << "   The map is probably corrupt: Ditching the map. " << endl;
-      mbResetRequested = true;
+      ++mnNumericalFailures;
+      msLastNumericalFailure=b.FailureReason();
+      std::cerr << "Bundle solve rejected: " << msLastNumericalFailure
+                << (mMap.IsGood()?"; previous map retained.":"; initialization rejected.") << std::endl;
+      // Bundle works on copies; do not apply any failed trial. Wait for a new
+      // keyframe before retrying this system instead of repeating every frame.
+      mbBundleRunning=false; mbBundleAbortRequested=false;
+      mbBundleConverged_Recent=true; mbBundleConverged_Full=true;
+      if(!mMap.IsGood()) mbResetRequested=true;
       return;
     }
 
@@ -840,6 +986,12 @@ void MapMaker::BundleAdjust(set<KeyFrame*> sAdjustSet, set<KeyFrame*> sFixedSet,
 	  itr!=mView_BundleID.end();
 	  itr++)
 	itr->first->se3CfromW = b.GetCamera(itr->second);
+#ifdef IPTAM_MOBILE_PAPER
+      RefreshRetainedPoses();
+#endif
+      // BA changes both point depths and source camera poses; refresh the
+      // geometric pixel footprint before any subsequent patch warp.
+      for(auto* point:mMap.vpPoints) point->RefreshPixelVectors();
       if(bRecent)
 	mbBundleConverged_Recent = false;
       mbBundleConverged_Full = false;
@@ -884,13 +1036,16 @@ void MapMaker::BundleAdjust(set<KeyFrame*> sAdjustSet, set<KeyFrame*> sFixedSet,
 // TrackerData.h.
 bool MapMaker::ReFind_Common(KeyFrame &k, MapPoint &p)
 {
+  // Failure queues may still reference points safely retained in map trash.
+  // They must never acquire new measurements after retirement.
+  if(p.bBad) return false;
   // abort if either a measurement is already in the map, or we've
   // decided that this point-kf combo is beyond redemption
   if(p.pMMData->sMeasurementKFs.count(&k)
      || p.pMMData->sNeverRetryKFs.count(&k))
     return false;
   
-  static PatchFinder Finder;
+  PatchFinder Finder;
   Vector<3> v3Cam = k.se3CfromW*p.v3WorldPos;
   if(v3Cam[2] < 0.001)
     {
@@ -912,7 +1067,7 @@ bool MapMaker::ReFind_Common(KeyFrame &k, MapPoint &p)
     }
 
   ImageRef irImageSize = k.aLevels[0].im.size();
-  if(v2Image[0] < 0 || v2Image[1] < 0 || v2Image[0] > irImageSize[0] || v2Image[1] > irImageSize[1])
+  if(!std::isfinite(v2Image*v2Image) || v2Image[0] < 0 || v2Image[1] < 0 || v2Image[0] >= irImageSize[0] || v2Image[1] >= irImageSize[1])
     {
       p.pMMData->sNeverRetryKFs.insert(&k);
       return false;
@@ -942,7 +1097,9 @@ bool MapMaker::ReFind_Common(KeyFrame &k, MapPoint &p)
   if(Finder.GetLevel() > 0)
     {
       Finder.MakeSubPixTemplate();
-      Finder.IterateSubPixToConvergence(k,8);
+      if(!Finder.IterateSubPixToConvergence(k,8)) {
+        p.pMMData->sNeverRetryKFs.insert(&k); return false;
+      }
       m.v2RootPos = Finder.GetSubPixPos();
       m.bSubPix = true;
     }
@@ -1006,7 +1163,7 @@ void MapMaker::ReFindFromFailureQueue()
 {
   if(mvFailureQueue.size() == 0)
     return;
-  sort(mvFailureQueue.begin(), mvFailureQueue.end());
+  // Keep deterministic insertion order, independent of allocator addresses.
   vector<pair<KeyFrame*, MapPoint*> >::iterator it;
   int nFound=0;
   for(it = mvFailureQueue.begin(); it!=mvFailureQueue.end(); it++)
@@ -1039,13 +1196,13 @@ SE3<> MapMaker::CalcPlaneAligner()
   
   for(int i=0; i<nRansacs; i++)
     {
-      int nA = rand()%nPoints;
+      int nA = mRng()%nPoints;
       int nB = nA;
       int nC = nA;
       while(nB == nA)
-	nB = rand()%nPoints;
+	nB = mRng()%nPoints;
       while(nC == nA || nC==nB)
-	nC = rand()%nPoints;
+	nC = mRng()%nPoints;
       
       Vector<3> v3Mean = 0.33333333 * (mMap.vpPoints[nA]->v3WorldPos + 
 				       mMap.vpPoints[nB]->v3WorldPos + 
@@ -1079,6 +1236,7 @@ SE3<> MapMaker::CalcPlaneAligner()
 	}
     }
   
+  if(dBestDistSquared == 9999999999999999.9) return SE3<>();
   // Done the ransacs, now collect the supposed inlier set
   vector<Vector<3> > vv3Inliers;
   for(unsigned int i=0; i<nPoints; i++)
@@ -1092,6 +1250,7 @@ SE3<> MapMaker::CalcPlaneAligner()
 	vv3Inliers.push_back(mMap.vpPoints[i]->v3WorldPos);
     }
   
+  if(vv3Inliers.size()<3) return SE3<>();
   // With these inliers, calculate mean and cov
   Vector<3> v3MeanOfInliers = Zeros;
   for(unsigned int i=0; i<vv3Inliers.size(); i++)
@@ -1130,23 +1289,26 @@ SE3<> MapMaker::CalcPlaneAligner()
 // Calculates the depth(z-) distribution of map points visible in a keyframe
 // This function is only used for the first two keyframes - all others
 // get this filled in by the tracker
-void MapMaker::RefreshSceneDepth(KeyFrame *pKF)
+bool MapMaker::RefreshSceneDepth(KeyFrame *pKF)
 {
   double dSumDepth = 0.0;
   double dSumDepthSquared = 0.0;
   int nMeas = 0;
-  for(meas_it it = pKF->mMeasurements.begin(); it!=pKF->mMeasurements.end(); it++)
+  for(auto* p:mMap.vpPoints)
     {
-      MapPoint &point = *it->first;
+      if(!pKF->mMeasurements.count(p)) continue;
+      MapPoint &point = *p;
       Vector<3> v3PosK = pKF->se3CfromW * point.v3WorldPos;
+      if(!std::isfinite(v3PosK*v3PosK) || v3PosK[2]<=0) continue;
       dSumDepth += v3PosK[2];
       dSumDepthSquared += v3PosK[2] * v3PosK[2];
       nMeas++;
     }
  
-  assert(nMeas > 2); // If not then something is seriously wrong with this KF!!
+  if(nMeas < 3) return false;
   pKF->dSceneDepthMean = dSumDepth / nMeas;
-  pKF->dSceneDepthSigma = sqrt((dSumDepthSquared / nMeas) - (pKF->dSceneDepthMean) * (pKF->dSceneDepthMean));
+  pKF->dSceneDepthSigma = sqrt(std::max(0.0, (dSumDepthSquared / nMeas) - (pKF->dSceneDepthMean) * (pKF->dSceneDepthMean)));
+  return std::isfinite(pKF->dSceneDepthMean) && std::isfinite(pKF->dSceneDepthSigma);
 }
 
 void MapMaker::GUICommandCallBack(void* ptr, string sCommand, string sParams)

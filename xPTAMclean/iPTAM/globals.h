@@ -11,10 +11,13 @@ const double MapMakerMaxKFDistWiggleMult =2;
 const int MapMakerPlaneAlignerRansacs = 100;
 const double Reloc2MaxScore = 9e6;
 const int TrackerDrawFASTCorners =0;
-const int MaxInitialTrails = 100;
+const int MaxInitialTrails = 1000;
+// Bound mapping work and memory on current mobile devices.
+const size_t MaxMapPoints = 5000;
+const size_t MaxPointsPerLevelInsertion = 300;
 const int BundleMaxIterations = 20;
 const double BundleUpdateSquaredConvergenceLimit = 1e-06;
-const int BundleCout = 240;
+const int BundleCout = 0;
 
 const double MapMakerWiggleScale = 0.1;
 const std::string BundleMEstimator = "Tukey";

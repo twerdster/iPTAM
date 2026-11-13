@@ -96,7 +96,7 @@ struct SizeMismatch_
 		#ifdef TOON_TEST_INTERNALS
 			throw Internal::StaticSizeMismatch();
 		#else
-			Internal::BadSize size_mismatch;
+			static_assert(Size1 == Size2, "TooN fixed-size mismatch");
 		#endif
 	}
 };

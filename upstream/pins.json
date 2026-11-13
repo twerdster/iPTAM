@@ -1,0 +1,6 @@
+{
+  "PTAM": {"url": "https://github.com/Oxford-PTAM/PTAM-GPL.git", "commit": "d9dca71ad57b0ef5b409e1670443060d49df63cb", "directory": "upstream-source"},
+  "TooN": {"url": "https://github.com/edrosten/TooN.git", "commit": "70a52c159cefec1bcf5ca9ed93a61e55663f6f43", "directory": "deps/TooN"},
+  "libcvd": {"url": "https://github.com/edrosten/libcvd.git", "commit": "0c7e481cc81606e32b079a6adb046b380f8349af", "directory": "deps/libcvd"},
+  "gvars": {"url": "https://github.com/edrosten/gvars.git", "commit": "5f9c50a35ab0c169c0b8d0f79abf2ae118665e8d", "directory": "deps/gvars"}
+}

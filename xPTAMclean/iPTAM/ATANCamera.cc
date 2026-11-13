@@ -3,11 +3,20 @@
 #include "helpers.h"
 #include "vector_image_ref.h"
 #include <iostream>
+#include <stdexcept>
+#include <limits>
 
 using namespace std;
 using namespace CVD;
 
-ATANCamera::ATANCamera(string sName)
+namespace {
+// A finite z=1 plane cannot represent the horizon. Keep a one-microradian
+// front-facing margin and reject its boundary instead of folding tan(theta).
+const double kEquidistantFrontLimit = std::acos(-1.0) / 2.0 - 1e-6;
+const double kNaN = std::numeric_limits<double>::quiet_NaN();
+}
+
+ATANCamera::ATANCamera(string sName) : mProjectionModel(ProjectionModel::FOV)
 {
   msName = sName;
 //	mgvvCameraParams=CameraParameters;
@@ -18,14 +27,74 @@ ATANCamera::ATANCamera(string sName)
   RefreshParams();
 }
 
+void ATANCamera::SetProjectionModel(ProjectionModel model)
+{
+  if(model != ProjectionModel::FOV && model != ProjectionModel::Equidistant)
+    throw std::invalid_argument("Unknown camera projection model");
+  if(model == ProjectionModel::Equidistant && mgvvCameraParams[4] != 0.0)
+    throw std::invalid_argument("Ideal equidistant camera requires zero FOV distortion");
+  mProjectionModel = model;
+  RefreshParams();
+}
+
+void ATANCamera::SetParameters(const Vector<5>& p) {
+  for(int i=0;i<5;++i) if(!std::isfinite(p[i])) throw std::invalid_argument("Camera parameters must be finite");
+  if(p[0] <= 0 || p[1] <= 0 || std::abs(p[4]) >= 3.0)
+    throw std::invalid_argument("Invalid focal length or FOV distortion");
+  if(mProjectionModel == ProjectionModel::Equidistant && p[4] != 0.0)
+    throw std::invalid_argument("Ideal equidistant camera requires zero FOV distortion");
+  mgvvCameraParams = p;
+  RefreshParams();
+}
+
 void ATANCamera::SetImageSize(Vector<2> vImageSize)
 {
+  if(!std::isfinite(vImageSize[0]) || !std::isfinite(vImageSize[1]) || vImageSize[0] <= 0 || vImageSize[1] <= 0)
+    throw std::invalid_argument("Camera image must be positive in each dimension");
   mvImageSize = vImageSize;
   RefreshParams();
 };
 
 void ATANCamera::RefreshParams() 
 {
+  if(mProjectionModel == ProjectionModel::Equidistant)
+    {
+      for(int axis=0; axis<2; ++axis)
+        {
+          mvFocal[axis] = mvImageSize[axis] * mgvvCameraParams[axis];
+          mvCenter[axis] = mvImageSize[axis] * mgvvCameraParams[axis+2] - 0.5;
+          mvInvFocal[axis] = 1.0 / mvFocal[axis];
+        }
+      mdW = mdWinv = md2Tan = mdOneOver2Tan = 0.0;
+      mdDistortionEnabled = 1.0;
+      double cornerTheta = 0.0;
+      for(int y=0; y<2; ++y)
+        for(int x=0; x<2; ++x)
+          {
+            const double a = ((x ? mvImageSize[0]-0.5 : -0.5) - mvCenter[0]) * mvInvFocal[0];
+            const double b = ((y ? mvImageSize[1]-0.5 : -0.5) - mvCenter[1]) * mvInvFocal[1];
+            cornerTheta = std::max(cornerTheta, std::hypot(a,b));
+          }
+      mdLargestRadius = std::tan(std::min(cornerTheta, kEquidistantFrontLimit));
+      mdMaxR = std::tan(kEquidistantFrontLimit);
+      mdOnePixelDist = std::hypot(mvInvFocal[0], mvInvFocal[1]) / std::sqrt(2.0);
+
+      // Conservative finite linear-render bounds enclose every valid front
+      // ray. Image corners beyond the horizon do not get unprojected. This
+      // clipping affects the render frustum only; UnProject rejects those
+      // measurements and leaves their original image intensities untouched.
+      mvImplaneTL = makeVector(-mdLargestRadius, -mdLargestRadius);
+      mvImplaneBR = makeVector(mdLargestRadius, mdLargestRadius);
+      mvUFBLinearInvFocal = mvImplaneBR - mvImplaneTL;
+      for(int axis=0; axis<2; ++axis)
+        {
+          mvUFBLinearFocal[axis] = 1.0 / mvUFBLinearInvFocal[axis];
+          mvUFBLinearCenter[axis] = 0.5;
+        }
+      Project(makeVector(0.0,0.0));
+      return;
+    }
+
   // This updates internal member variables according to the current camera parameters,
   // and the currently selected target image size.
   //
@@ -107,6 +176,26 @@ void ATANCamera::RefreshParams()
 // Project from the camera z=1 plane to image pixels,
 // while storing intermediate calculation results in member variables
 Vector<2> ATANCamera::Project(const Vector<2>& vCam){
+  if(mProjectionModel == ProjectionModel::Equidistant)
+    {
+      mvLastCam = vCam;
+      mdLastR = std::hypot(vCam[0],vCam[1]);
+      mbInvalid = !std::isfinite(mdLastR) || mdLastR >= mdMaxR;
+      if(mbInvalid)
+        {
+          mdLastFactor = mdLastDistR = kNaN;
+          mvLastDistCam = mvLastIm = makeVector(kNaN,kNaN);
+          return mvLastIm;
+        }
+      const double r2 = mdLastR * mdLastR;
+      mdLastFactor = r2 < 1e-8 ? 1.0-r2/3.0+r2*r2/5.0 : std::atan(mdLastR)/mdLastR;
+      mdLastDistR = std::atan(mdLastR);
+      mvLastDistCam = mdLastFactor * vCam;
+      mvLastIm = makeVector(mvCenter[0]+mvFocal[0]*mvLastDistCam[0],
+                            mvCenter[1]+mvFocal[1]*mvLastDistCam[1]);
+      return mvLastIm;
+    }
+
   mvLastCam = vCam;
   mdLastR = sqrt(vCam * vCam);
   mbInvalid = (mdLastR > mdMaxR);
@@ -124,6 +213,28 @@ Vector<2> ATANCamera::Project(const Vector<2>& vCam){
 // while storing intermediate calculation results in member variables
 Vector<2> ATANCamera::UnProject(const Vector<2>& v2Im)
 {
+  if(mProjectionModel == ProjectionModel::Equidistant)
+    {
+      mvLastIm = v2Im;
+      mvLastDistCam = makeVector((v2Im[0]-mvCenter[0])*mvInvFocal[0],
+                                 (v2Im[1]-mvCenter[1])*mvInvFocal[1]);
+      mdLastDistR = std::hypot(mvLastDistCam[0],mvLastDistCam[1]);
+      mbInvalid = !std::isfinite(mdLastDistR) || mdLastDistR >= kEquidistantFrontLimit;
+      if(mbInvalid)
+        {
+          mdLastR = mdLastFactor = kNaN;
+          mvLastCam = makeVector(kNaN,kNaN);
+          return mvLastCam;
+        }
+      const double theta2 = mdLastDistR * mdLastDistR;
+      const double scale = theta2 < 1e-8 ? 1.0+theta2/3.0+2.0*theta2*theta2/15.0
+                                         : std::tan(mdLastDistR)/mdLastDistR;
+      mvLastCam = scale * mvLastDistCam;
+      mdLastR = std::tan(mdLastDistR);
+      mdLastFactor = 1.0 / scale;
+      return mvLastCam;
+    }
+
   mvLastIm = v2Im;
   mvLastDistCam[0] = (mvLastIm[0] - mvCenter[0]) * mvInvFocal[0];
   mvLastDistCam[1] = (mvLastIm[1] - mvCenter[1]) * mvInvFocal[1];
@@ -171,6 +282,25 @@ Matrix<4> ATANCamera::MakeUFBLinearFrustumMatrix(double near, double far)
 
 Matrix<2,2> ATANCamera::GetProjectionDerivs()
 {
+  if(mProjectionModel == ProjectionModel::Equidistant)
+    {
+      Matrix<2> jac;
+      if(mbInvalid)
+        {
+          jac[0] = makeVector(kNaN,kNaN);
+          jac[1] = makeVector(kNaN,kNaN);
+          return jac;
+        }
+      const double x=mvLastCam[0], y=mvLastCam[1];
+      const double r2=x*x+y*y, r=std::sqrt(r2);
+      const double scale = r2 < 1e-8 ? 1.0-r2/3.0+r2*r2/5.0 : std::atan(r)/r;
+      const double radial = r2 < 1e-8 ? -2.0/3.0+4.0*r2/5.0-6.0*r2*r2/7.0
+                                      : (r/(1.0+r2)-std::atan(r))/(r2*r);
+      jac[0] = makeVector(mvFocal[0]*(scale+radial*x*x), mvFocal[0]*radial*x*y);
+      jac[1] = makeVector(mvFocal[1]*radial*x*y, mvFocal[1]*(scale+radial*y*y));
+      return jac;
+    }
+
   // get the derivative of image frame wrt camera z=1 frame at the last computed projection
   // in the form (d im1/d cam1, d im1/d cam2)
   //             (d im2/d cam1, d im2/d cam2)
@@ -250,6 +380,12 @@ void ATANCamera::DisableRadialDistortion()
 
 Vector<2> ATANCamera::UFBProject(const Vector<2>& vCam)
 {
+  if(mProjectionModel == ProjectionModel::Equidistant)
+    {
+      const Vector<2> pixel = Project(vCam);
+      return makeVector((pixel[0]+0.5)/mvImageSize[0], (pixel[1]+0.5)/mvImageSize[1]);
+    }
+
   // Project from camera z=1 plane to UFB, storing intermediate calc results.
   mvLastCam = vCam;
   mdLastR = sqrt(vCam * vCam);
@@ -265,6 +401,9 @@ Vector<2> ATANCamera::UFBProject(const Vector<2>& vCam)
 
 Vector<2> ATANCamera::UFBUnProject(const Vector<2>& v2Im)
 {
+  if(mProjectionModel == ProjectionModel::Equidistant)
+    return UnProject(makeVector(v2Im[0]*mvImageSize[0]-0.5, v2Im[1]*mvImageSize[1]-0.5));
+
   mvLastIm = v2Im;
   mvLastDistCam[0] = (mvLastIm[0] - (mgvvCameraParams)[2]) / (mgvvCameraParams)[0];
   mvLastDistCam[1] = (mvLastIm[1] - (mgvvCameraParams)[3]) / (mgvvCameraParams)[1];

@@ -1,0 +1,115 @@
+Historical validation excerpt. See docs/RESULTS.md for current results.
+Evidence labels refer to local validation artifacts; raw logs and binaries are not redistributed.
+Machine-specific identifiers and paths are omitted.
+
+Current numerical solver validation, 2026-11-12.
+Final host binary build-experiment/iptam_replay SHA256:
+a319cbc477f734d08cf4fbf1690b2ff6bb2673adaba7881dd9161dc9f7717654
+Shipping default minimum LM lambda0, with transactional accepted-state retention.
+Explicit minimum1e-6 remains an experimental constructor option. Existing positive-pivot, finite-cost,
+finite-geometry checks and retry/outer bounds remain enabled. No residual-only
+bootstrap acceptance or weak-tracking keyframe gate was added.
+
+Preserved original failure:
+evidence/host/final_20261112_frozen/euroc_cam1/repeat_01
+The old e0d4c505 full right-camera EuRoC run stalled nearframe800 and emitted
+5,104,213 NANNERY events (489,316,222-byte stderr). failure.json and
+first_nan_matrices.txt preserve the manual-stop and numeric evidence.
+The finite1e200 measurement fixture reproduced the old Compute outer-loop hang
+in the immutable historical archive; evidence/iptam-bundle-overflow-old-failure.json
+records termination after2.003seconds. Current regression rejects it without
+changing committed geometry.
+
+Corrections and transaction semantics:
+- Validate camera/point/measurement inputs, positive finite noise variances,
+  current/trial residuals and objectives, Jacobians, normal matrices, inverses,
+  LDL pivots, updates and trial geometry. Bound trial and outer loops separately.
+- Reject each failed trial; do not commit its *New camera/point state or its
+  outlier classifications. Hard failure retains an existing good map and waits
+  for a new keyframe before retrying that system; invalid bootstrap fails.
+- A captured iPhone new-lounge0/18 diagnostic had16 accepted cost-decreasing
+  steps followed by4 singular trials within20 total attempts. The first guard
+  wrongly discarded all16 accepted steps. tests/fixtures/phone_schur_20261112.*
+  preserves the exact17-digit matrix/provenance. Its eigenminimum-.170967 versus
+  maximum8.111725e6 is genuinely negative, so that latest trial remains rejected.
+- Bounded late trial exhaustion can retain the prior committed accepted estimate
+  only with finite decreasing accepted-objective pairs, finite accepted geometry
+  and current visual support for every adjusted camera. It reports
+  StoppedAtAcceptedEstimate=true and Converged=false; prior committed outlier
+  list stays intact. Hard invalid inputs/no accepted supported estimate fail.
+- The default minimum0 preserves PTAM's adaptive damping policy, now safely
+  retaining usable accepted iterates when late trials fail. Explicit minimum1e-6
+  prevents the observed near-gauge cancellation on the fixture, but is an
+  experimental option because complete-sequence EuRoC coverage regressed. Fewer
+  retained-stop events alone are insufficient reason to choose that profile.
+- MapMaker NumericalFailureCount is hard rejection count; RetainedSolveCount is
+  a separate bounded accepted-estimate stop count. LastNumericalFailure exposes
+  the latest reason. Replay appends solver_failures and solver_retained_stops,
+  flushing every output row to preserve progress on termination.
+
+Meaningful solver regressions (tests/bundle_solver_tests.cc):
+- Finite coordinate overflow, zero-support singularity, invalid variances and
+  NaN points reject with finite unchanged committed state and bounded runtime.
+- Calibrated exact two-view problem remains solvable.
+- Recorded phone indefinite Schur matrix is rejected.
+- Fixed80point multidepth cloud with measurement outliers drives real iterative
+  optimization, not fabricated solver flags. The actual default constructor gives17
+  accepted steps and11 committed outliers before a retained bounded stop.
+  Explicit experimental minimum1e-6 gives20 accepted steps and12 outliers without
+  singular trial rejection. Each objective pair decreases; geometry remains
+  finite and outlier IDs are unique/inrange. Convergence is not fabricated.
+
+Current default-transaction release suite:5/5passed,4.95seconds.
+Current default-transaction ASan+UBSan suite:5/5passed,29.80seconds (Apple leak detector disabled;
+Foundation parser target separately validated). Full exact output and command
+lines are in docs/core-validation-2026-11-12.txt.
+
+Retained isolated native-equidistant A/B (same explicit image-only pairs,
+original pixels and intrinsics; these are experiments, not final full-suite
+certification):
+- New lounge0/18, transaction/floor both81/81postinit strictvisual frames and
+ 95.62%reference motion coverage; Sim3 RMS6.33mm/5.56mm, median orientation
+ .278/.300deg. Retained solve stops8/0; hard rejections0/0.
+- Historical lounge0/16, strict86/230 versus87/230; RMS5.063mm/5.038mm on
+ respective valid subsets, retained stops12/0. The floor still has a126frame
+ tracking gap and32.57%motion coverage, so the complete scan remains incomplete.
+- Matching the source lens model is essential: pinhole-cropped and native exact
+ equidistant sequences differ in field of view and cannot be treated as an
+ isolated solver A/B. Ground truth/reference never initializes the tracker.
+- EuRoC and historical complete-sequence limits must be reported with coverage,
+ gaps, accuracy and timing, even when every output pose is finite and repeated
+ process results agree. Final current-binary host/device reports are separate.
+
+Rejected minimum1e-6 complete-sequence control:
+evidence/host/final_production_20261112
+contains the frozen e57d5d36 floor candidate, all4inputs x3 full runs, and
+provenance/results.json. State/pose/count outputs repeat exactly in3/3 processes
+per input excluding elapsed_ms; no watchdog abort or nonfinite output occurs.
+Its strict counts are historical96/230, new81/100, EuRoC0 365/3682,
+EuRoC1 254/3682. The lower EuRoC coverage compared with transaction-only controls
+means this safe-processing result does not justify making the floor default.
+Final default0 same-input repetitions and physical-phone results are recorded
+separately; the control folder name predates this decision.
+
+Mapper maintenance correction in the current candidate:
+The serial port previously returned immediately after a recent/full BA stage,
+starving HandleBadPoints while bounded accepted estimates stayed nonconverged.
+The historical mapper always reached cleanup. The serial stage selection now
+uses if/else and always retires bad points afterward; ReFind_Common rejects
+bBad before geometry/measurement bookkeeping so queued failures cannot revive
+a retired point. Regression tests exercise the actual pending recent-BA branch,
+keyframe measurement removal, a successful textured refind, trash retirement
+and failure-queue retry rejection. Numerical and tracking thresholds are
+unchanged. Earlier starvation-profile coverage/accuracy results remain controls;
+this correctness repair is not selected by keeping only favorable segments.
+
+Minimum visual-support consistency in the current candidate:
+AssessTrackingQuality now marks map tracking BAD for fewer than10 found
+measurements, using the same support minimum already enforced by Engine and
+the evaluator. A high match fraction on1,3or9 points cannot seed a GOOD-quality
+keyframe or delay the lost-state transition.10found/30attempted resumes GOOD
+under the unchanged ratio heuristic and clears consecutive loss. This is the
+only behavior change after cleanup candidate8e6d843c; solver, camera, stage
+scheduling and other thresholds are unchanged. Matched-source experiments
+retained all outcomes before promotion; final current-binary dataset/device
+repetitions are recorded separately.

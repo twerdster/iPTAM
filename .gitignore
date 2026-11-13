@@ -1,0 +1,15 @@
+build*/
+ios/build*/
+__pycache__/
+.venv/
+*.pyc
+.DS_Store
+
+# Local recordings, validation output and Xcode user state
+/data/
+/evidence/
+/results/
+/DerivedData/
+*.pbxuser
+*.mode1v3
+xcuserdata/

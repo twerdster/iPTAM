@@ -17,6 +17,7 @@ using namespace TooN;
 #include "se3.h"
 #include <vector>
 #include "globals.h"
+#include <random>
 
 // Homography matches are 2D-2D matches in a stereo pair, unprojected
 // to the Z=1 plane.
@@ -46,6 +47,7 @@ class HomographyInit
 public:
   bool Compute(std::vector<HomographyMatch> vMatches, double dMaxPixelError, SE3<> &se3SecondCameraPose);
 protected:
+  std::mt19937 mRng{42}; // Fixed seed: reproducible replay and reset.
   Matrix<3> HomographyFromMatches(std::vector<HomographyMatch> vMatches);
   void BestHomographyFromMatches_MLESAC();
   void DecomposeHomography();

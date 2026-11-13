@@ -17,9 +17,15 @@
 struct TrackerData
 {
 TrackerData(MapPoint *pMapPoint) 
-: Point(*pMapPoint)
-  {};
+: Point(*pMapPoint), bInImage(false), bPotentiallyVisible(false), nSearchLevel(0), bSearched(false), bFound(false), bDidSubPix(false), dSqrtInvNoise(1.0)
+  { v3Cam=Zeros; v2ImPlane=Zeros; v2Image=Zeros; m2CamDerivs=Zeros; v2Found=Zeros; v2Error_CovScaled=Zeros; m26Jacobian=Zeros; };
   
+#ifdef IPTAM_MOBILE_PAPER
+  int mobileLastObservedFrame=-1;
+  double mobileLastObservedTimestamp=0;
+  bool mobileLastObservationTimed=false;
+  Vector<2> mobileLastObservedPosition=Zeros;
+#endif
   MapPoint &Point;
   PatchFinder Finder;
   
@@ -50,16 +56,16 @@ TrackerData(MapPoint *pMapPoint)
   {
     bInImage = bPotentiallyVisible = false;
     v3Cam = se3CFromW * Point.v3WorldPos;
-    if(v3Cam[2] < 0.001)
+    if(!std::isfinite(v3Cam*v3Cam) || v3Cam[2] < 0.001)
       return;
     v2ImPlane = project(v3Cam);
     if(v2ImPlane*v2ImPlane > Cam.LargestRadiusInImage() * Cam.LargestRadiusInImage())
       return;
     v2Image = Cam.Project(v2ImPlane);
-    if(Cam.Invalid())
+    if(Cam.Invalid() || !std::isfinite(v2Image*v2Image))
       return;
     
-    if(v2Image[0] < 0 || v2Image[1] < 0 || v2Image[0] > irImageSize[0] || v2Image[1] > irImageSize[1])
+    if(v2Image[0] < 0 || v2Image[1] < 0 || v2Image[0] >= irImageSize[0] || v2Image[1] >= irImageSize[1])
       return;
     bInImage = true;
   }
@@ -77,8 +83,8 @@ TrackerData(MapPoint *pMapPoint)
   inline void ProjectAndDerivs(SE3<> &se3, ATANCamera &Cam)
   {
     Project(se3, Cam);
-    if(bFound)
-      GetDerivsUnsafe(Cam);
+    if(bInImage) GetDerivsUnsafe(Cam);
+    else bFound=false;
   }
   
   // Jacobian of projection W.R.T. the camera position

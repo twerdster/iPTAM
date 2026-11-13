@@ -34,9 +34,9 @@ VideoSource::VideoSource()
 {
 	cout << "  VideoSource: Opening video source..." << endl;
 	if (sml) 
-	mptr = new VideoCapture("/users/aw/desktop/PTAMvids/small.AVI");	
+	mptr = new VideoCapture("data/videos/small.AVI");
 	else
-		mptr = new VideoCapture("/users/aw/desktop/PTAMvids/check_table1.AVI");	
+		mptr = new VideoCapture("data/videos/check_table1.AVI");
 	VideoCapture* cap = (VideoCapture*)mptr;
 	if(!cap->isOpened()){
 		cerr << "Unable to get the camera" << endl;

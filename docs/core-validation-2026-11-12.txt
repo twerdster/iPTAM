@@ -1,0 +1,120 @@
+Historical validation excerpt. See docs/RESULTS.md for current results.
+Evidence labels refer to local validation artifacts; raw logs and binaries are not redistributed.
+Machine-specific identifiers and paths are omitted.
+
+Current portable-core validation, 2026-11-12.
+Source profile: modern-ios-port working snapshot, identified by the hashes below.
+Binary: build-experiment/iptam_replay
+SHA256: a319cbc477f734d08cf4fbf1690b2ff6bb2673adaba7881dd9161dc9f7717654
+Profile: original serial PTAM estimator; explicit FOV/pinhole or exact equidistant
+camera model; bounded transactional bundle adjustment; default minimum LM lambda0;
+per-frame numerical failure recovery, invalid-projection search rejection,
+mandatory after-stage mapper cleanup and retired-point refind rejection;
+map tracking uses the same minimum10 visual matches as Engine/evaluator validity.
+No weak-tracking keyframe gate or LK estimator/frontend is integrated.
+
+This supersedes the earlier 3-test e0d4c505 and 4-test 2543d7d8 numeric
+certifications and the minimum1e-6 floor candidate e57d5d36. Their failure
+evidence, numerical controls and full dataset outputs are preserved. The
+ac76a02c default0 profile before mapper-cleanup restoration is also retained
+as a control; known cleanup starvation is not preserved for selective scores.
+The 8e6d843c cleanup profile before internal minimum10 consistency is retained
+as a separate control.
+The final host repeatability/device sequence suite is recorded separately;
+passing these regressions alone does not establish whole-sequence stability.
+
+Release command:
+cmake --build build-experiment -j 6
+ctest --test-dir build-experiment --output-on-failure
+Test project ./build-experiment
+    Start 1: core_regressions
+1/5 Test #1: core_regressions .................   Passed    4.33 sec
+    Start 2: patchfinder_regressions
+2/5 Test #2: patchfinder_regressions ..........   Passed    0.20 sec
+    Start 3: bundle_solver_regressions
+3/5 Test #3: bundle_solver_regressions ........   Passed    0.20 sec
+    Start 4: equidistant_camera_regressions
+4/5 Test #4: equidistant_camera_regressions ...   Passed    0.21 sec
+    Start 5: replay_manifest_regressions
+5/5 Test #5: replay_manifest_regressions ......   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =   4.95 sec
+
+Sanitizer command:
+cmake --build build-sanitize -j 6
+ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-sanitize --output-on-failure
+Core, patch finder, bundle solver and camera targets use ASan+UBSan.
+Foundation manifest validation is a separate host test without instrumentation.
+Apple arm64 ASan's leak detector is unsupported; detect_leaks=0 disables only
+that detector, not address or undefined-behavior checks.
+Test project ./build-sanitize
+    Start 1: core_regressions
+1/5 Test #1: core_regressions .................   Passed   28.85 sec
+    Start 2: patchfinder_regressions
+2/5 Test #2: patchfinder_regressions ..........   Passed    0.32 sec
+    Start 3: bundle_solver_regressions
+3/5 Test #3: bundle_solver_regressions ........   Passed    0.29 sec
+    Start 4: equidistant_camera_regressions
+4/5 Test #4: equidistant_camera_regressions ...   Passed    0.33 sec
+    Start 5: replay_manifest_regressions
+5/5 Test #5: replay_manifest_regressions ......   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =  29.80 sec
+
+Regression coverage:
+- On an initialized finite map, high-fraction1/3,3/3 and9/9 support is BAD,
+  preventing GOOD-quality keyframe eligibility and incrementing lost-state
+  count;10/30 support resumes GOOD and clears consecutive loss. This aligns
+  internal tracking with the pre-existing output-validity support policy.
+- Actual pending RecentBA branch with fewer than8keyframes must still remove
+  a bad active point and its keyframe measurement. A second test first matches
+  a real textured patch, retires the point into map trash, and retries a queued
+  failed measurement; no retired point measurement may be reinserted.
+- Three full initialized/reset/destruct lifecycles produce identical synthetic
+  textured-plane poses and measurement counts; 39/39 subsequent visual frames,
+  eight blank occlusion frames, and visual relocalization after scene return.
+- An actual nonfinite WLS update invalidates its frame; the next valid textured
+  frame recovers, and Reset clears the previous numerical-failure flag. The
+  fixture uses TrackerData's explicitly zero-initialized vectors/Jacobian and
+  unit noise before injecting its single known NaN Jacobian element.
+- Wrong frame shape, invalid calibration, duplicate timestamp, blank bootstrap,
+  empty homography and zero/small-sample robust residuals are rejected/finite.
+- SearchForPoints rejects a pose-refined behind-camera candidate and a
+  nonfinite linearized pixel update before template/statistics/integer search.
+- Cached valid template recovery after rejected warp, singular public wrapper,
+  and nonfinite geometry/warp rejection.
+- Finite1e200 residual overflow and unsupported singular camera are bounded;
+  invalid variance/point inputs and failed-trial geometry rollback are tested.
+- Actual phone Schur fixture rejects its negative pivot. The deterministic
+  80-point multi-depth/outlier fixture retains17 real accepted steps under the
+  actual default minimum0 constructor; explicit experimental minimum1e-6
+  accepts20 steps with no rejected singular trial. Every accepted objective pair is finite and
+  decreases; committed outlier IDs are unique and in range.
+- Exact equidistant checks cover all307200 native lounge pixels:16 invalid
+  rear-domain corner pixels, max roundtrip1.659e-13px, analytic derivative
+  finite-difference maxerror4.384e-8; original FOV/pinhole, copy/resize/model
+  switching, NaN/Inf/horizon and finite bounds are also tested.
+- Foundation manifest parser validates camera models and replay input schema.
+
+Supplementary latest ownership/lifecycle memory observation:
+This check preceded only the minimum-support predicate/test addition; no
+ownership, allocation or cleanup code changed afterward:
+MallocStackLogging=1 leaks --atExit -- ./build-experiment/iptam_core_tests
+reported 0 leaks / 0 leaked bytes over three initialized/reset/destruct
+lifecycles plus mapper maintenance regressions, peak physical footprint
+reported as 37.1M. Raw report:
+docs/core-mapper-cleanup-leaks-2026-11-12.txt (process70488, 2026-11-12 19:33).
+Previous control receipts remain docs/core-transaction-leaks-2026-11-12.txt and
+docs/core-final-leaks-2026-11-12.txt.
+Apple reports the process is not debuggable but supplies this heap summary.
+This is neither an on-device memory profile nor a hard whole-session bound.
+
+An earlier retained-trail initialization retry smoke check rejected a degenerate
+first second-frame pair, then initialized from978 surviving correspondences on
+another user request:977map points,956matches,quality2. Initialization still
+requires overlap, texture and useful translation; pure rotation/fast motion and
+weak parallax are not guaranteed to initialize.

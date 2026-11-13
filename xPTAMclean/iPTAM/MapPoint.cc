@@ -1,6 +1,9 @@
 // Copyright 2008 Isis Innovation Limited
 #include "MapPoint.h"
 #include "KeyFrame.h"
+#include "TrackerData.h"
+#include "MapMaker.h"
+MapPoint::~MapPoint() { delete pTData; delete pMMData; }
 void MapPoint::RefreshPixelVectors()
 {
   KeyFrame &k = *pPatchSourceKF;
@@ -18,6 +21,9 @@ void MapPoint::RefreshPixelVectors()
   double dOneRightRate = fabs(v3OneRightFromCenter_NC * v3Normal_NC);
   double dOneDownRate = fabs(v3OneDownFromCenter_NC * v3Normal_NC);
   
+  if(!std::isfinite(dCamHeight) || dPixelRate<1e-8 || dOneRightRate<1e-8 || dOneDownRate<1e-8) {
+    bBad=true; v3PixelRight_W=Zeros; v3PixelDown_W=Zeros; return;
+  }
   // Find projections onto plane
   Vector<3> v3CenterOnPlane_C = v3Center_NC * dCamHeight / dPixelRate;
   Vector<3> v3OneRightOnPlane_C = v3OneRightFromCenter_NC * dCamHeight / dOneRightRate;

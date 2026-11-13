@@ -30,7 +30,11 @@ using namespace TooN;
 class MapPoint;
 class SmallBlurryImage;
 
+#ifdef IPTAM_MOBILE_PAPER
+#define LEVELS 5
+#else
 #define LEVELS 4
+#endif
 
 // Candidate: a feature in an image which could be made into a map point
 struct Candidate
@@ -46,6 +50,14 @@ struct Measurement
   int nLevel;   // Which image level?
   bool bSubPix; // Has this measurement been refined to sub-pixel level?
   Vector<2> v2RootPos;  // Position of the measurement, REFERED TO PYRAMID LEVEL ZERO
+#ifdef IPTAM_MOBILE_PAPER
+  Vector<2> v2RawRootPos = Zeros, v2BundleRootPos = Zeros;
+  Vector<2> v2PreviousRootPos = Zeros, v2NextRootPos = Zeros;
+  Matrix<2,6> m26PoseJacobian = Zeros;
+  double timestamp = 0, previousTimestamp = 0, nextTimestamp = 0;
+  bool hasRawPosition = false, hasPrevious = false, hasNext = false, rollingShutterCorrected = false;
+  Vector<2> BundlePosition() const { return rollingShutterCorrected ? v2BundleRootPos : v2RootPos; }
+#endif
   enum {SRC_TRACKER, SRC_REFIND, SRC_ROOT, SRC_TRAIL, SRC_EPIPOLAR} Source; // Where has this measurement come frome?
 };
 
@@ -78,16 +90,30 @@ struct KeyFrame
   inline KeyFrame()
   {
     pSBI = NULL;
+    bFixed = false; dSceneDepthMean = 1.0; dSceneDepthSigma = 1.0;
   }
+  KeyFrame(const KeyFrame& rhs);
+  KeyFrame& operator=(const KeyFrame& rhs);
+  ~KeyFrame();
   SE3<> se3CfromW;    // The coordinate frame of this key-frame as a Camera-From-World transformation
   bool bFixed;      // Is the coordinate frame of this keyframe fixed? (only true for first KF!)
   Level aLevels[LEVELS];  // Images, corners, etc lives in this array of pyramid levels
   std::map<MapPoint*, Measurement> mMeasurements;           // All the measurements associated with the keyframe
   
-  void MakeKeyFrame_Lite(CVD::BasicImage<CVD::byte> &im);   // This takes an image and calculates pyramid levels etc to fill the 
+  void MakeKeyFrame_Lite(CVD::BasicImage<CVD::byte> &im
+#ifdef IPTAM_MOBILE_PAPER
+                         , bool detectFeatures=true
+#endif
+                         );   // This takes an image and calculates pyramid levels etc to fill the
                                                             // keyframe data structures with everything that's needed by the tracker..
   void MakeKeyFrame_Rest();                                 // ... while this calculates the rest of the data which the mapmaker needs.
   
+#ifdef IPTAM_MOBILE_PAPER
+  double captureTimestamp = 0;
+  bool hasCaptureTimestamp = false;
+  bool mobileBlurFallback = false;
+  bool mobileCornersReady = false;
+#endif
   double dSceneDepthMean;      // Hacky hueristics to improve epipolar search.
   double dSceneDepthSigma;
   

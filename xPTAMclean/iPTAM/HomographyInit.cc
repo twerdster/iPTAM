@@ -32,6 +32,13 @@ double HomographyInit::MLESACScore(Matrix<3> m3Homography, HomographyMatch match
 
 bool HomographyInit::Compute(vector<HomographyMatch> vMatches, double dMaxPixelError, SE3<> &se3SecondFromFirst)
 {
+  mRng.seed(42);
+  if(vMatches.size()<4 || !std::isfinite(dMaxPixelError) || dMaxPixelError <= 0) return false;
+  for(const auto& m:vMatches) for(int i=0;i<2;++i)
+    if(!std::isfinite(m.v2CamPlaneFirst[i]) || !std::isfinite(m.v2CamPlaneSecond[i])) return false;
+  Vector<2> mean=Zeros; for(const auto& m:vMatches) mean += m.v2CamPlaneFirst; mean /= vMatches.size();
+  Matrix<2> cov=Zeros; for(const auto& m:vMatches) { auto d=m.v2CamPlaneFirst-mean; cov += d.as_col()*d.as_row(); }
+  if(cov[0][0]*cov[1][1]-cov[0][1]*cov[1][0] < 1e-10) return false;
   mdMaxPixelErrorSquared = dMaxPixelError * dMaxPixelError;
   mvMatches = vMatches;
   
@@ -43,6 +50,7 @@ bool HomographyInit::Compute(vector<HomographyMatch> vMatches, double dMaxPixelE
   for(unsigned int i=0; i<mvMatches.size(); i++)
     if(IsHomographyInlier(mm3BestHomography, mvMatches[i]))
       mvHomographyInliers.push_back(mvMatches[i]);
+  if(mvHomographyInliers.size()<4) return false;
   for(int iteration = 0; iteration < 5; iteration++)
     RefineHomographyWithInliers();
   
@@ -201,7 +209,7 @@ void HomographyInit::BestHomographyFromMatches_MLESAC()
 	  int n;
 	  while(!isUnique)
 	    {
-	      n = rand() % mvMatches.size();
+	      n = mRng() % mvMatches.size();
 	      isUnique =true;
 	      for(int j=0; j<i && isUnique; j++)
 		if(anIndices[j] == n)

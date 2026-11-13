@@ -21,6 +21,7 @@
 #ifndef __TRACKER_H
 #define __TRACKER_H
 
+#include "RenderCompat.h"
 #include "MapMaker.h"
 #include "ATANCamera.h"
 #include "MiniPatch.h"
@@ -30,6 +31,12 @@
 #include <vector>
 #include <list>
 #include "globals.h"
+#include <random>
+#ifdef IPTAM_MOBILE_PAPER
+#include "MobileInitializer.h"
+#include "RollingShutter.h"
+#include <memory>
+#endif
 
 
 class TrackerData;
@@ -38,6 +45,9 @@ struct Trail    // This struct is used for initial correspondences of the first 
   MiniPatch mPatch;
   CVD::ImageRef irCurrentPos;
   CVD::ImageRef irInitialPos;
+#ifdef IPTAM_MOBILE_PAPER
+  Vector<2> mobileCurrentPosition=Zeros;
+#endif
 };
 
 class Tracker
@@ -45,6 +55,25 @@ class Tracker
 public:
   Tracker(CVD::ImageRef irVideoSize, const ATANCamera &c, Map &m, MapMaker &mm);
   
+  ~Tracker();
+  void SetFrameTimestamp(double timestampSeconds); // Monotonic capture time, call before TrackFrame.
+  int TrackingQuality() const { return mMap.IsGood() ? static_cast<int>(mTrackingQuality) : -1; } // -1 initializing, 0 bad, 1 poor, 2 good
+  int LastVisibleCount() const { return mnVisible; }
+  int LastWarpRejectedCount() const { return mnWarpRejected; }
+  int LastTemplateRejectedCount() const { return mnTemplateRejected; }
+  int MeasurementsFound() const;
+  int MeasurementsAttempted() const;
+  int PoseInliers() const { return mnPoseInliers; } // Final-pose robust support, separate from raw patch matches.
+  double InitialMedianDisplacement() const;
+  size_t InitialTrailCount() const { return mlTrails.size(); }
+
+#ifdef IPTAM_MOBILE_PAPER
+  bool MobileBlurFallback() const { return mbMobileBlurFallback; }
+  int MobileCoarseMatches() const { return mnMobileCoarseMatches; }
+  const std::string& MobileInitializationStage() const { return msMobileInitializationStage; }
+  int MobileRSObservations() const { return mnMobileRSObservations; }
+  int MobileRSCorrections() const { return mnMobileRSCorrections; }
+#endif
   // TrackFrame is the main working part of the tracker: call this every frame.
   void TrackFrame(CVD::Image<CVD::byte> &imFrame, uint hnd,bool bDraw); 
 
@@ -81,6 +110,15 @@ protected:
   KeyFrame mPreviousFrameKF;      // Used by trail tracking to check married matches
   
   // Methods for tracking the map once it has been made:
+#ifdef IPTAM_MOBILE_PAPER
+  void TrackMapMobile();
+  int TrailTrackingAdvanceMobile();
+  void UpdateMobileTemporalMeasurements();
+  std::unique_ptr<IPTAMMobile::MobileInitializer> mpMobileInitializer;
+  bool mbMobileBlurFallback=false;
+  int mnMobileCoarseMatches=0, mnMobileRSObservations=0, mnMobileRSCorrections=0;
+  std::string msMobileInitializationStage="not_started";
+#endif
   void TrackMap();                // Called by TrackFrame if there is a map.
   void AssessTrackingQuality();   // Heuristics to choose between good, poor, bad.
   void ApplyMotionModel();        // Decaying velocity motion model applied prior to TrackMap
@@ -91,6 +129,7 @@ protected:
   Vector<6> CalcPoseUpdate(std::vector<TrackerData*> vTD, 
 			   double dOverrideSigma = 0.0, 
 			   bool bMarkOutliers = false); // Updates pose from found points.
+  void UpdatePoseInlierCount(const std::vector<TrackerData*>& measurements);
   SE3<> mse3CamFromWorld;           // Camera pose: this is what the tracker updates every frame.
   SE3<> mse3StartPos;               // What the camera pose was at the start of the frame.
   Vector<6> mv6CameraVelocity;    // Motion model
@@ -98,6 +137,15 @@ protected:
   double mdMSDScaledVelocityMagnitude; // Velocity magnitude scaled by relative scene depth.
   bool mbDidCoarse;               // Did tracking use the coarse tracking stage?
   
+  std::mt19937 mRng{42}; // Fixed seed: reproducible replay and reset.
+  bool mbNumericalFailure=false;
+  int mnPoseInliers=0;
+  int mnVisible=0, mnWarpRejected=0, mnTemplateRejected=0;
+  double mdLastKeyFrameTimestamp = -1e30;
+  bool mbTimestampSet = false;
+  double mdLastFrameTimestamp = 0.0;
+  double mdPreviousFrameInterval = 0.0;
+  double mdFrameIntervalRatio = 1.0;
   bool mbDraw;                    // Should the tracker draw anything to OpenGL?
   
   // Interface with map maker:

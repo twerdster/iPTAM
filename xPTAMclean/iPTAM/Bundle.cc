@@ -5,6 +5,11 @@
 #include "Cholesky.h"
 #include <fstream>
 #include <iomanip>
+#include <limits>
+#include <sstream>
+#ifdef IPTAM_MOBILE_PAPER
+#include "MobileMappingBudget.h"
+#endif
 
 using namespace std;
 
@@ -13,6 +18,20 @@ inline bool isnan(double d) {return !(d==d);}
 #endif
 
 #define cout if(mgvnBundleCout) cout
+
+template<class T> bool FiniteVector(const T& v) {
+  for(int i=0;i<v.size();++i) if(!std::isfinite(v[i])) return false;
+  return true;
+}
+template<class T> bool FiniteMatrix(const T& m) {
+  for(int r=0;r<m.num_rows();++r) for(int c=0;c<m.num_cols();++c) if(!std::isfinite(m[r][c])) return false;
+  return true;
+}
+template<class T> bool PositivePivots(const T& decomposition) {
+  const auto diagonal=decomposition.get_D();
+  for(int i=0;i<diagonal.num_rows();++i) if(!std::isfinite(diagonal[i][i]) || diagonal[i][i]<=0) return false;
+  return true;
+}
 
 // Some inlines which replace standard matrix multiplications 
 // with LL-triangle-only versions.
@@ -30,9 +49,10 @@ inline void BundleTriangle_UpdateM3V_LL(Matrix<3> &m3V, Matrix<2,3> &m23B)
 }
 
 // Constructor copies MapMaker's camera parameters
-Bundle::Bundle(const ATANCamera &TCam)
-  : mCamera(TCam)
+Bundle::Bundle(const ATANCamera &TCam, double minimumLambda)
+  : mCamera(TCam), mdMinimumLambda(minimumLambda)
 {
+  if(!std::isfinite(minimumLambda) || minimumLambda<0) mbInvalidInput=true;
   mnCamsToUpdate = 0;
   mnStartRow = 0;
   mgvnMaxIterations=BundleMaxIterations;
@@ -43,6 +63,7 @@ Bundle::Bundle(const ATANCamera &TCam)
 // Add a camera to the system, return value is the bundle adjuster's ID for the camera
 int Bundle::AddCamera(SE3<> se3CamFromWorld, bool bFixed)
 {
+  if(!FiniteVector(se3CamFromWorld.ln())) mbInvalidInput=true;
   int n = mvCameras.size();
   Camera c;
   c.bFixed = bFixed;
@@ -65,11 +86,7 @@ int Bundle::AddPoint(Vector<3> v3Pos)
 {
   int n = mvPoints.size();
   ExtendedMapPoint p;
-  if(isnan(v3Pos * v3Pos))
-    {
-      cerr << " You sucker, tried to give me a nan " << v3Pos << endl;
-      v3Pos = Zeros;
-    }
+  if(!FiniteVector(v3Pos)) mbInvalidInput=true;
   p.v3Pos = v3Pos;
   mvPoints.push_back(p);
   return n;
@@ -78,8 +95,10 @@ int Bundle::AddPoint(Vector<3> v3Pos)
 // Add a measurement of one point with one camera
 void Bundle::AddMeas(int nCam, int nPoint, Vector<2> v2Pos, double dSigmaSquared)
 {
-  assert(nCam < (int) mvCameras.size());
-  assert(nPoint < (int) mvPoints.size());
+  if(nCam<0 || nCam>=int(mvCameras.size()) || nPoint<0 || nPoint>=int(mvPoints.size()) ||
+     !FiniteVector(v2Pos) || !std::isfinite(dSigmaSquared) || dSigmaSquared<=0) {
+    mbInvalidInput=true; return;
+  }
   mvPoints[nPoint].nMeasurements++;
   mvPoints[nPoint].sCameras.insert(nCam);
   Meas m;
@@ -112,6 +131,15 @@ void Bundle::ClearAccumulators()
 // value for big error.
 int Bundle::Compute(bool *pbAbortSignal)
 {
+  mFailureReason.clear(); mnNumericalRejections=0;
+  mbStoppedAtAcceptedEstimate=false; mvAcceptedObjectives.clear();
+#ifdef IPTAM_MOBILE_PAPER
+  mbBudgetStopped=false;
+  const bool budgetAvailableAtEntry=!IPTAMMobile::MappingBudgetExpired();
+#endif
+  if(mbInvalidInput || !pbAbortSignal || mvCameras.empty() || mvPoints.empty() || mMeasList.empty()) {
+    mFailureReason="invalid bundle inputs"; return -1;
+  }
   mpbAbortSignal = pbAbortSignal;
 
   // Some speedup data structures
@@ -119,7 +147,7 @@ int Bundle::Compute(bool *pbAbortSignal)
   GenerateOffDiagScripts();
 
   // Initially behave like gauss-newton
-  mdLambda = 0.0001;
+  mdLambda = std::max(0.0001, mdMinimumLambda);
   mdLambdaFactor = 2.0;
   mbConverged = false;
   mbHitMaxIterations = false;
@@ -129,8 +157,19 @@ int Bundle::Compute(bool *pbAbortSignal)
   // What MEstimator are we using today?
   static string gvsMEstimator=BundleMEstimator;
   
+  int outerSteps=0;
   while(!mbConverged  && !mbHitMaxIterations && !*pbAbortSignal)
     {
+#ifdef IPTAM_MOBILE_PAPER
+      // Yield only between transactional solver steps. Committed estimates
+      // remain valid, and a budget yield does not mean convergence/failure.
+      // If setup consumed the budget, permit one complete bounded step. A
+      // repeated fresh setup that always yields before solving would starve BA.
+      if(IPTAMMobile::MappingBudgetExpired() && (!budgetAvailableAtEntry || outerSteps>0)) {mbBudgetStopped=true;break;}
+#endif
+      if(++outerSteps>mgvnMaxIterations) {
+        mFailureReason="bundle outer iteration limit"; return -1;
+      }
       bool bNoError;
       if(gvsMEstimator == "Cauchy")
 	bNoError = Do_LM_Step<Cauchy>(pbAbortSignal);  
@@ -146,8 +185,10 @@ int Bundle::Compute(bool *pbAbortSignal)
 	  bNoError = Do_LM_Step<Tukey>(pbAbortSignal);
 	};
       
-      if(!bNoError)
-	return -1;
+      if(!bNoError) {
+        if(PreserveAcceptedStateAfterBoundedTrial()) return mnAccepted;
+        return -1;
+      }
     }
   
   if(mbHitMaxIterations)
@@ -155,6 +196,32 @@ int Bundle::Compute(bool *pbAbortSignal)
   cout << "Final Sigma Squared: " << mdSigmaSquared << " (= " << sqrt(mdSigmaSquared) / 4.685 << " pixels.)" << endl;
   return mnAccepted;
 };
+
+bool Bundle::AcceptedStateIsUsable() const {
+  if(mnAccepted<=0 || mvAcceptedObjectives.size()!=size_t(mnAccepted)) return false;
+  for(const auto& objective:mvAcceptedObjectives)
+    if(!std::isfinite(objective.first) || !std::isfinite(objective.second) || objective.second>=objective.first) return false;
+  for(const auto& camera:mvCameras) if(!FiniteVector(camera.se3CfW.ln())) return false;
+  for(const auto& point:mvPoints) if(!FiniteVector(point.v3Pos)) return false;
+  // Require actual current visual support for every adjusted camera. A
+  // singular zero-support bootstrap must still fail, even after prior work.
+  for(size_t camera=0;camera<mvCameras.size();++camera) if(!mvCameras[camera].bFixed) {
+    size_t support=0;
+    for(const auto& measurement:mMeasList) if(measurement.c==int(camera) && !measurement.bBad) ++support;
+    if(support<3) return false;
+  }
+  return true;
+}
+
+bool Bundle::PreserveAcceptedStateAfterBoundedTrial() {
+  if(!mbHitMaxIterations || !AcceptedStateIsUsable()) return false;
+  // Only *New contains the failed trial. Keep the committed accepted poses,
+  // points and outlier list exactly as they were; do not commit trial flags.
+  mbStoppedAtAcceptedEstimate=true;
+  mFailureReason="bounded singular trial stop after "+std::to_string(mnAccepted)+
+                 " finite cost-decreasing accepted steps; accepted state retained";
+  return true;
+}
 
 // Reproject a single measurement, find error
 inline void Bundle::ProjectAndFindSquaredError(Meas &meas)
@@ -164,6 +231,7 @@ inline void Bundle::ProjectAndFindSquaredError(Meas &meas)
   
   // Project the point.
   meas.v3Cam = cam.se3CfW * point.v3Pos;
+  if(!FiniteVector(meas.v3Cam)) { meas.bBad=true; Fail("non-finite projected point"); return; }
   if(meas.v3Cam[2] <= 0)
     {
       meas.bBad = true;
@@ -175,6 +243,9 @@ inline void Bundle::ProjectAndFindSquaredError(Meas &meas)
   meas.m2CamDerivs = mCamera.GetProjectionDerivs();
   meas.v2Epsilon = meas.dSqrtInvNoise * (meas.v2Found - v2Image);
   meas.dErrorSquared = meas.v2Epsilon * meas.v2Epsilon;
+  if(!std::isfinite(meas.dErrorSquared) || !FiniteMatrix(meas.m2CamDerivs)) {
+    meas.bBad=true; Fail("non-finite measurement residual or Jacobian");
+  }
 }
 
 template<class MEstimator>
@@ -198,7 +269,10 @@ bool Bundle::Do_LM_Step(bool *pbAbortSignal)
   // Projected all points and got vector of errors; find the median, 
   // And work out robust estimate of sigma, then scale this for the tukey
   // estimator
+  if(!mFailureReason.empty()) return false;
+  if(vdErrorSquared.empty()) return Fail("bundle has no finite visible measurements");
   mdSigmaSquared = MEstimator::FindSigmaSquared(vdErrorSquared);
+  if(!std::isfinite(mdSigmaSquared) || mdSigmaSquared<=0) return Fail("non-finite robust measurement scale");
 
   // Initially the median error might be very small - set a minimum
   // value so that good measurements don't get erased!
@@ -305,9 +379,16 @@ bool Bundle::Do_LM_Step(bool *pbAbortSignal)
   // OK, done (i) and most of (ii) except calcing Yij; this depends on Vi, which should 
   // be finished now. So we can find V*i (by adding lambda) and then invert.
   // The next bits depend on mdLambda! So loop this next bit until error goes down.
+  if(!std::isfinite(dCurrentError)) return Fail("non-finite current bundle objective");
   double dNewError = dCurrentError + 9999;
   while(dNewError > dCurrentError && !mbConverged && !mbHitMaxIterations && !*pbAbortSignal)
     {
+#ifdef IPTAM_MOBILE_PAPER
+      // Never export a half-built trial or its tentative outlier flags.
+      if(IPTAMMobile::MappingBudgetExpired() && mnAccepted>0) {mbBudgetStopped=true;return true;}
+#endif
+      if(!std::isfinite(mdLambda)) return Fail("non-finite bundle damping");
+      bool pointSystemValid=true;
       // Rest of part (ii) : find V*i inverse
       for(vector<ExtendedMapPoint>::iterator itr = mvPoints.begin(); itr!=mvPoints.end(); itr++)
 	{
@@ -324,11 +405,19 @@ bool Bundle::Do_LM_Step(bool *pbAbortSignal)
 	       
 	      for(int i=0; i<3; i++)
 		m3VStar[i][i] *= (1.0 + mdLambda);
-	      Cholesky<3> chol(m3VStar);
+	      if(!FiniteMatrix(m3VStar)) return Fail("non-finite point normal matrix");
+              Cholesky<3> chol(m3VStar);
+              if(!PositivePivots(chol)) { pointSystemValid=false; break; }
 	      point.m3VStarInv = chol.get_inverse();
+              if(!FiniteMatrix(point.m3VStarInv)) return Fail("non-finite point inverse");
 	    };
 	}
 
+      if(!pointSystemValid) {
+        ++mnNumericalRejections; ModifyLambda_BadStep();
+        if(++mnCounter>=mgvnMaxIterations) { mbHitMaxIterations=true; return Fail("point system remained singular after bounded damping retries"); }
+        continue;
+      }
       // Done part (ii), except calculating Yij;
       // But we can do this inline when we calculate S in part (iii).
       
@@ -426,7 +515,31 @@ bool Bundle::Do_LM_Step(bool *pbAbortSignal)
       // Got fat matrix S and vector E from part(iii). Now Cholesky-decompose
       // the matrix, and find the camera update vector.
       Vector<> vCamerasUpdate(mS.num_rows());
-      vCamerasUpdate = Cholesky<>(mS).backsub(vE);
+      if(!FiniteMatrix(mS) || !FiniteVector(vE)) return Fail("non-finite camera normal system");
+      Cholesky<> cameraDecomposition(mS);
+      if(!PositivePivots(cameraDecomposition)) {
+        ++mnNumericalRejections; ModifyLambda_BadStep();
+        if(++mnCounter>=mgvnMaxIterations) {
+          mbHitMaxIterations=true;
+          std::ostringstream diagnostic;
+          diagnostic << "camera Schur system rejected at attempt " << mnCounter
+                     << ", accepted_steps=" << mnAccepted << ", singular_trials=" << mnNumericalRejections
+                     << ", lambda=" << mdLambda << ", camera_support=";
+          for(size_t camera=0;camera<mvCameras.size();++camera) {
+            size_t support=0; for(const auto& measurement:mMeasList)
+              if(measurement.c==int(camera) && !measurement.bBad) ++support;
+            diagnostic << support << (mvCameras[camera].bFixed?"F,":"V,");
+          }
+          const auto pivots=cameraDecomposition.get_D();
+          diagnostic << ", pivots=";
+          for(int row=0;row<pivots.num_rows();++row) diagnostic << pivots[row][row] << ',';
+          if(mS.num_rows()<=12) diagnostic << ", schur_matrix=" << std::setprecision(17) << mS;
+          return Fail(diagnostic.str());
+        }
+        continue;
+      }
+      vCamerasUpdate = cameraDecomposition.backsub(vE);
+      if(!FiniteVector(vCamerasUpdate)) return Fail("non-finite camera update");
       
       // Part (iv): Compute the map updates
       Vector<> vMapUpdates(mvPoints.size() * 3);
@@ -446,17 +559,14 @@ bool Bundle::Do_LM_Step(bool *pbAbortSignal)
 	    }
 	  Vector<3> v3 = mvPoints[i].v3EpsilonB - v3Sum;
 	  vMapUpdates.slice(i * 3, 3) = mvPoints[i].m3VStarInv * v3;
-	  if(isnan(vMapUpdates.slice(i * 3, 3) * vMapUpdates.slice(i * 3, 3)))
-	    {
-	      cerr << "NANNERY! " << endl;
-	      cerr << mvPoints[i].m3VStarInv << endl;
-	    };
+          if(!FiniteVector(vMapUpdates.slice(i*3,3))) return Fail("non-finite map update");
 	}
       
       // OK, got the two update vectors.
       // First check for convergence..
       // (this is a very poor convergence test)
       double dSumSquaredUpdate = vCamerasUpdate * vCamerasUpdate + vMapUpdates * vMapUpdates;
+      if(!std::isfinite(dSumSquaredUpdate)) return Fail("non-finite squared update magnitude");
       if(dSumSquaredUpdate< mgvdUpdateConvergenceLimit)
 	mbConverged = true;
       
@@ -475,6 +585,7 @@ bool Bundle::Do_LM_Step(bool *pbAbortSignal)
 	mvPoints[i].v3PosNew = mvPoints[i].v3Pos + vMapUpdates.slice(i*3, 3);
       // Calculate new error by re-projecting, doing tukey, etc etc:
       dNewError = FindNewError<MEstimator>();
+      if(!std::isfinite(dNewError)) return Fail("non-finite trial bundle objective");
       
       cout <<setprecision(1) << "L" << mdLambda << setprecision(3) <<  "\tOld " << dCurrentError << "  New " << dNewError << "  Diff " << dCurrentError - dNewError << "\t";
       
@@ -500,6 +611,7 @@ bool Bundle::Do_LM_Step(bool *pbAbortSignal)
 	mvCameras[j].se3CfW = mvCameras[j].se3CfWNew;
       for(unsigned int i=0; i<mvPoints.size(); i++)
 	mvPoints[i].v3Pos = mvPoints[i].v3PosNew; 
+      mvAcceptedObjectives.emplace_back(dCurrentError,dNewError);
       mnAccepted++;
     }
   
@@ -534,6 +646,7 @@ double Bundle::FindNewError()
       Meas &meas = *itr;
       // Project the point.
       Vector<3> v3Cam = mvCameras[meas.c].se3CfWNew * mvPoints[meas.p].v3PosNew;
+      if(!FiniteVector(v3Cam)) return std::numeric_limits<double>::infinity();
       if(v3Cam[2] <= 0)
 	{
 	  dNewError += 1.0;
@@ -544,6 +657,7 @@ double Bundle::FindNewError()
       Vector<2> v2Image   = mCamera.Project(v2ImPlane);
       Vector<2> v2Error =   meas.dSqrtInvNoise * (meas.v2Found - v2Image);
       double dErrorSquared = v2Error * v2Error;
+      if(!std::isfinite(dErrorSquared)) return std::numeric_limits<double>::infinity();
       dNewError += MEstimator::ObjectiveScore(dErrorSquared, mdSigmaSquared);
     }
   return dNewError;
@@ -602,7 +716,7 @@ void Bundle::GenerateOffDiagScripts()
 void Bundle::ModifyLambda_GoodStep()
 {
   mdLambdaFactor = 2.0;
-  mdLambda *= 0.3;
+  mdLambda = std::max(mdMinimumLambda, mdLambda * 0.3);
 };
 
 void Bundle::ModifyLambda_BadStep()

@@ -60,6 +60,14 @@ public:
   // returned as an int. Negative level returned denotes an inappropriate 
   // transformation.
   int CalcSearchLevelAndWarpMatrix(MapPoint &p, SE3<> se3CFromW, Matrix<2> &m2CamDerivs);
+#ifdef IPTAM_MOBILE_PAPER
+  // Fixed target level, variable source level (ISMAR 2009 section 4).
+  int CalcSearchLevelAndWarpMatrixAtLevel(MapPoint&, SE3<>, Matrix<2>&, int targetLevel);
+  void SetMobileMatching(bool enabled, bool blurFallback=false) { mbMobileMatching=enabled; mdMobileMaxNSSD=blurFallback ? 0.35 : 0.65; }
+  void MakeMobileTemplateAtRoot(KeyFrame&,int level,const Vector<2>& rootPosition);
+  int MobileSourceLevel() const { return mnMobileSourceLevel; }
+  double NormalizedSSDAtPoint(CVD::BasicImage<CVD::byte>&, const CVD::ImageRef&) const;
+#endif
   inline int GetLevel() { return mnSearchLevel; }
   inline int GetLevelScale() { return LevelScale(mnSearchLevel); }
   
@@ -106,6 +114,13 @@ public:
 
 protected:
  
+#ifdef IPTAM_MOBILE_PAPER
+  bool mbMobileMatching=false;
+  double mdMobileMaxNSSD=0.65;
+  int mnMobileSourceLevel=0, mnLastMobileSourceLevel=-1;
+  double MobileESMIteration(KeyFrame&);
+  bool MobileSubPixAccepted(KeyFrame&) const;
+#endif
   int mnPatchSize; // Size of one side of the matching template.
   
   // Some values stored for the coarse template:

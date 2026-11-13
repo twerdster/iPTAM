@@ -1,0 +1,29 @@
+{
+  "dataset": "lounge_new",
+  "description": "Simulated lounge; physical-phone automatic replay",
+  "visualization": "Offline source frames plus saved camera trajectory; no invented feature overlays",
+  "alignment": "Offline strict-support Sim3 fit; reference never fed to estimator",
+  "trajectory_connections": "Only adjacent source frames with two accepted poses; weak/lost gaps remain open",
+  "timing": "Source exposure timing; not a screen recording or a measured processing frame rate",
+  "source_frames": 100,
+  "accepted_frames": 82,
+  "first_accepted_frame": 17,
+  "weak_frame_indices": [
+    61
+  ],
+  "source_pixels_sha256": "e2f3d034af4fe161e9f61d986d74dbd23a3d8d55eb8c47e7210cd5b1aa493999",
+  "frames_jsonl_sha256": "ed73a10df04a4cedca5abd95af951b9a615f72e6e10707ea0ccf23db85ae4653",
+  "requested_manifest_sha256": "cb1adca1e66e8bf53024236d181426681ba1fe08dfe9da13c7aaab6ad5485fbe",
+  "benchmark_executable_sha256": "0c740562b775e644bf7cb2bbd73c3568bcedbfc904776d3f22b9b214c32d96f7",
+  "strict_position_rms_m": 0.023943731588838724,
+  "reference_motion_coverage": 0.95158339778831,
+  "gif_sha256": "5596a8faa9403bca2461ae579095e8ce48f732be85357081c60b1e14078ef854",
+  "gif_bytes": 1852923,
+  "gif_frames": 100,
+  "gif_size": [
+    640,
+    438
+  ],
+  "gif_duration_ms": 10000,
+  "source_gray_levels": 20
+}

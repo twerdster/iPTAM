@@ -105,12 +105,19 @@ class Bundle
 {
 public:
 
-  Bundle(const ATANCamera &TCam);   // We need the camera model because we do full distorting projection in the bundle adjuster. Could probably get away with a linear approximation.
+  Bundle(const ATANCamera &TCam, double minimumLambda = 0.0);   // We need the camera model because we do full distorting projection in the bundle adjuster. Could probably get away with a linear approximation.
   int AddCamera(SE3<> se3CamFromWorld, bool bFixed); // Add a viewpoint. bFixed signifies that this one is not to be adjusted.
   int AddPoint(Vector<3> v3Pos);       // Add a map point.
   void AddMeas(int nCam, int nPoint, Vector<2> v2Pos, double dSigmaSquared); // Add a measurement
   int Compute(bool *pbAbortSignal);    // Perform bundle adjustment. Aborts if *pbAbortSignal gets set to true. Returns number of accepted update iterations, or negative on error.
+  const std::string& FailureReason() const { return mFailureReason; }
+  bool StoppedAtAcceptedEstimate() const { return mbStoppedAtAcceptedEstimate; }
+  const std::vector<std::pair<double,double>>& AcceptedObjectives() const { return mvAcceptedObjectives; }
+  unsigned int NumericalRejections() const { return mnNumericalRejections; }
   inline bool Converged() { return mbConverged;}  // Has bundle adjustment converged?
+#ifdef IPTAM_MOBILE_PAPER
+  bool BudgetStopped() const { return mbBudgetStopped; }
+#endif
   Vector<3> GetPoint(int n);       // Point coords after adjustment
   SE3<> GetCamera(int n);            // Camera pose after adjustment
   std::vector<std::pair<int,int> > GetOutlierMeasurements();  // Measurements flagged as outliers
@@ -127,6 +134,14 @@ protected:
   void ModifyLambda_GoodStep();
   void ModifyLambda_BadStep();
   
+  bool PreserveAcceptedStateAfterBoundedTrial();
+  bool AcceptedStateIsUsable() const;
+  bool mbStoppedAtAcceptedEstimate=false;
+  std::vector<std::pair<double,double>> mvAcceptedObjectives;
+  bool Fail(const std::string& reason) { mFailureReason=reason; return false; }
+  bool mbInvalidInput=false;
+  std::string mFailureReason;
+  unsigned int mnNumericalRejections=0;
   std::vector<ExtendedMapPoint> mvPoints;
   std::vector<Camera> mvCameras;
   std::list<Meas> mMeasList;
@@ -139,7 +154,11 @@ protected:
   double mdSigmaSquared;
   double mdLambda;
   double mdLambdaFactor;
+  double mdMinimumLambda;
   bool mbConverged;
+#ifdef IPTAM_MOBILE_PAPER
+  bool mbBudgetStopped=false;
+#endif
   bool mbHitMaxIterations;
   int mnCounter;
   int mnAccepted;

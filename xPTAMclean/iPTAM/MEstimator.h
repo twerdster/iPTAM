@@ -77,13 +77,13 @@ inline double Tukey::ObjectiveScore(double dErrorSquared, const double dSigmaSqu
 inline double Tukey::FindSigmaSquared(std::vector<double> &vdErrorSquared)
 { 
   double dSigmaSquared; 
-  assert(vdErrorSquared.size() > 0);
+  if(vdErrorSquared.empty()) return 1.0;
   std::sort(vdErrorSquared.begin(), vdErrorSquared.end());
   double dMedianSquared = vdErrorSquared[vdErrorSquared.size() / 2];
-  double dSigma = 1.4826 * (1 + 5.0 / (vdErrorSquared.size() * 2 - 6)) * sqrt(dMedianSquared);
+  double dSigma = 1.4826 * (1 + 5.0 / std::max(1.0, 2.0 * double(vdErrorSquared.size()) - 6.0)) * sqrt(dMedianSquared);
   dSigma =  4.6851 * dSigma;
   dSigmaSquared = dSigma * dSigma;
-  return dSigmaSquared;
+  return std::max(1e-12, dSigmaSquared);
 }
 
 
@@ -111,13 +111,13 @@ inline double Cauchy::ObjectiveScore(double dErrorSquared, const double dSigmaSq
 inline double Cauchy::FindSigmaSquared(std::vector<double> &vdErrorSquared)
 { 
   double dSigmaSquared; 
-  assert(vdErrorSquared.size() > 0);
+  if(vdErrorSquared.empty()) return 1.0;
   std::sort(vdErrorSquared.begin(), vdErrorSquared.end());
   double dMedianSquared = vdErrorSquared[vdErrorSquared.size() / 2];
-  double dSigma = 1.4826 * (1 + 5.0 / (vdErrorSquared.size() * 2 - 6)) * sqrt(dMedianSquared);
+  double dSigma = 1.4826 * (1 + 5.0 / std::max(1.0, 2.0 * double(vdErrorSquared.size()) - 6.0)) * sqrt(dMedianSquared);
   dSigma =  4.6851 * dSigma;
   dSigmaSquared = dSigma * dSigma;
-  return dSigmaSquared;
+  return std::max(1e-12, dSigmaSquared);
 }
 
 
@@ -155,13 +155,13 @@ inline double Huber::ObjectiveScore(double dErrorSquared, const double dSigmaSqu
 inline double Huber::FindSigmaSquared(std::vector<double> &vdErrorSquared)
 { 
   double dSigmaSquared; 
-  assert(vdErrorSquared.size() > 0);
+  if(vdErrorSquared.empty()) return 1.0;
   std::sort(vdErrorSquared.begin(), vdErrorSquared.end());
   double dMedianSquared = vdErrorSquared[vdErrorSquared.size() / 2];
-  double dSigma = 1.4826 * (1 + 5.0 / (vdErrorSquared.size() * 2 - 6)) * sqrt(dMedianSquared);
+  double dSigma = 1.4826 * (1 + 5.0 / std::max(1.0, 2.0 * double(vdErrorSquared.size()) - 6.0)) * sqrt(dMedianSquared);
   dSigma =  1.345 * dSigma;
   dSigmaSquared = dSigma * dSigma;
-  return dSigmaSquared;
+  return std::max(1e-12, dSigmaSquared);
 }
 
 ///////////////////////////////////////
