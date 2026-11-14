@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "benchmark_date": "2026-11-13",
+  "executables": {
+    "original_phone": {
+      "sha256": "64e342dfb7e4b06dd01f40f1ce84a2b67ac7815f9e971fd2c5f0aa13b48434c6",
+      "role": "Frozen official Oxford PTAM-GPL r114 compatibility port; original asynchronous algorithms retained."
+    },
+    "restored_phone": {
+      "sha256": "72171a7c3e9765838bd58881e82af3f2bed8f0cacab4ee4dd16e87983cdb1cc2",
+      "role": "Frozen restored iPTAM control."
+    },
+    "mobile_phone_benchmark": {
+      "sha256": "0c740562b775e644bf7cb2bbd73c3568bcedbfc904776d3f22b9b214c32d96f7",
+      "role": "Five-input automatic benchmark and two fixed-pair ablations."
+    },
+    "mobile_host_benchmark": {
+      "sha256": "694807b9c7081caa61fa885050e99235ca4416f40d9d4f20c60316a522be3638",
+      "role": "31 complete host trials."
+    },
+    "mobile_phone_handoff": {
+      "sha256": "f4681a6e2d9583e3a49470943903fcf006bccf7370be7d0d6fcb2fe55e174dbe",
+      "role": "Malformed-input receipt fix and separately reported compatibility checks.",
+      "compiled_changes_vs_phone_benchmark": [
+        "ios/App.mm"
+      ],
+      "estimator_sources_identical": true,
+      "change": "Malformed mobile configuration records input identity and no-camera-request flag; successful replay path is unchanged."
+    }
+  },
+  "source_evidence_sha256": {
+    "handoff_compatibility_receipt": "1dbd7d4ffdf3b29bb871dfdc55daacd26b367c48a17b5dc20f700c52cd97f5cd",
+    "deferred-release-tests.log": "c3a589e0ae7b6b1649020aa7fc66a3ab7ed2bb5da657bdecf21980e63bff3540",
+    "deferred-sanitizer-tests.log": "8fa21d7338c4443dd22d4c2e7da500fbd9b9ff58f14e05a40340275ca3c2ee5a",
+    "deferred-mapping-leaks.log": "11922e3b4e1ce8931eef7b1354fd771bd658cf1954f38650c1ec8729f4796a0b",
+    "mobile-off-tests.log": "59ca09b587a6870cb82aacc5479d265bf0f8dd6d123781c87e8a59505a7bb497",
+    "compatibility-receipt.json": "1dbd7d4ffdf3b29bb871dfdc55daacd26b367c48a17b5dc20f700c52cd97f5cd"
+  },
+  "public_aggregates_sha256": {
+    "phone-trials.csv": "b74f8fce185d97e9abb5f0c8fe9cb1e21efa0048b7b85db8aa0bed598a563902",
+    "summary.json": "4ee59ef5fd64d511434d1ccdd543f019615071abe8d1e0d65be4287ba75fb270",
+    "frozen-input-plan.json": "86fd71979a6c3476c07d7eb12a69925a16b79bd1116c2ddcb2b57098ad03c6aa",
+    "publication-checks.json": "3a650a08522a09e201af9991792a9d0cdbfa24e01105b420f984724b9a45c6fd"
+  },
+  "note": "Executable and test-receipt hashes identify the archived builds and focused checks. Public aggregate hashes cover the five-input summaries. Benchmark and handoff builds are not pooled."
+}

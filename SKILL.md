@@ -64,15 +64,14 @@ tests. Publication-only checks go in `docs/results/publication-checks.json`;
 keep their counts separate from the archived benchmark tests.
 
 
+## Documentation consistency
+
+Keep the root README concise and preserve the local modern-update badge link.
+`updated/README.md` explains the restoration and links to setup, implementation,
+results and attribution. Report only the five inputs in the current catalog;
+keep CSV, JSON, documentation totals and public aggregate hashes synchronized.
+Historical reports may describe distinct builds; never pool their measurements.
+
 Before every commit, review `SUMMARY.md` and this file; explicitly check and
 update each for behavior, workflow, command, output or status changes. Preserve
 all PTAM, LibCVD and TooN notices. The original Xcode project is historical.
-
-## Modern update navigation
-
-Keep the local New! badge and exact “Updated and ported for modern hardware”
-link immediately below the root README title. Put the brief change description
-and further update links in `updated/README.md` under the matching heading;
-retain the existing reference body and implementation paths. Check the badge,
-relative links and README body preservation after navigation-only changes.
-Do not reinterpret historical validation as a new runtime check.

@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "benchmark_date": "2026-11-13",
+  "kind": "Sanitized frozen input catalog, not the original execution plan.",
+  "initialization_policy": "Fixed pairs below apply to original/restored and mobile paper ablations. Mobile auto uses init_first but selects its second view from images.",
+  "estimator_inputs": [
+    "grayscale images",
+    "pinhole intrinsics",
+    "source exposure timestamps"
+  ],
+  "forbidden_estimator_inputs": [
+    "reference poses",
+    "ground truth",
+    "ARKit poses/features",
+    "IMU",
+    "depth",
+    "mesh"
+  ],
+  "cases": [
+    {
+      "name": "lounge_reference",
+      "source_kind": "simulation",
+      "lens_model": "pinhole",
+      "width": 640,
+      "height": 480,
+      "pixel_K": {
+        "fx": 400,
+        "fy": 400,
+        "cx": 319.5,
+        "cy": 239.5
+      },
+      "frame_count": 230,
+      "source_span_seconds": 22.90046325000003,
+      "interval_min_median_max_seconds": [
+        0.10000179200005732,
+        0.10000200000001769,
+        0.10000229100000979
+      ],
+      "init_first": 0,
+      "init_second": 16,
+      "pixel_sha256": "12ab22217853c79ba05963fefd6d6883058b1d39d2602cca43a58b6f8313034c",
+      "pgm_files_concatenated_sha256": "5ad56b00ec885868f5d17177ce9ba9dcde629ef21cef9a7884e4431d8b3ad844",
+      "reference_role": "simulation truth",
+      "reference_used_for_selection": false,
+      "reference_used_for_estimation": false
+    },
+    {
+      "name": "lounge_new",
+      "source_kind": "simulation",
+      "lens_model": "pinhole",
+      "width": 640,
+      "height": 480,
+      "pixel_K": {
+        "fx": 400,
+        "fy": 400,
+        "cx": 319.5,
+        "cy": 239.5
+      },
+      "frame_count": 100,
+      "source_span_seconds": 9.899999999999977,
+      "interval_min_median_max_seconds": [
+        0.09999999999990905,
+        0.10000000000002274,
+        0.10000000000002274
+      ],
+      "init_first": 0,
+      "init_second": 18,
+      "pixel_sha256": "e2f3d034af4fe161e9f61d986d74dbd23a3d8d55eb8c47e7210cd5b1aa493999",
+      "pgm_files_concatenated_sha256": "576ad0297b26c71ec80218dd9c140ca2966006a72e2775cd9fd9e057fd677b49",
+      "reference_role": "simulation truth",
+      "reference_used_for_selection": false,
+      "reference_used_for_estimation": false
+    },
+    {
+      "name": "euroc_cam0",
+      "source_kind": "real EuRoC left",
+      "lens_model": "pinhole",
+      "width": 640,
+      "height": 480,
+      "pixel_K": {
+        "fx": 460,
+        "fy": 460,
+        "cx": 319.5,
+        "cy": 239.5
+      },
+      "frame_count": 3682,
+      "source_span_seconds": 184.05,
+      "interval_min_median_max_seconds": [
+        0.04999999999998295,
+        0.04999999999999716,
+        0.05000000000001137
+      ],
+      "init_first": 1200,
+      "init_second": 1205,
+      "pixel_sha256": "b645c399203efbf250a594e7970128e6432ef9512cfcf23110d9c086591f8fc7",
+      "pgm_files_concatenated_sha256": "ccfa2b9e89042a520742f3ed5a9c9e315638e71138e2c02bb4b23720d2836f6d",
+      "reference_role": "EuRoC Leica/IMU batch reference",
+      "reference_used_for_selection": false,
+      "reference_used_for_estimation": false
+    },
+    {
+      "name": "euroc_cam1",
+      "source_kind": "real EuRoC right",
+      "lens_model": "pinhole",
+      "width": 640,
+      "height": 480,
+      "pixel_K": {
+        "fx": 460,
+        "fy": 460,
+        "cx": 319.5,
+        "cy": 239.5
+      },
+      "frame_count": 3682,
+      "source_span_seconds": 184.05,
+      "interval_min_median_max_seconds": [
+        0.04999999999998295,
+        0.04999999999999716,
+        0.05000000000001137
+      ],
+      "init_first": 0,
+      "init_second": 5,
+      "pixel_sha256": "4509df34db4506b0df3a582ae92ff351a1234cebee490291380143839ab61469",
+      "pgm_files_concatenated_sha256": "f3843fda5672a94a51df22a3c26ee2253faf96540b5562f65bcd8ab4cbafba9d",
+      "reference_role": "EuRoC Leica/IMU batch reference",
+      "reference_used_for_selection": false,
+      "reference_used_for_estimation": false
+    },
+    {
+      "name": "actual_lounge",
+      "source_kind": "real sparse lounge",
+      "lens_model": "pinhole",
+      "width": 640,
+      "height": 480,
+      "pixel_K": {
+        "fx": 460.0,
+        "fy": 460.0,
+        "cx": 319.5,
+        "cy": 239.5
+      },
+      "frame_count": 142,
+      "source_span_seconds": 131.90287491700292,
+      "interval_min_median_max_seconds": [
+        0.7502928339999926,
+        0.7503007500017702,
+        4.335116124999331
+      ],
+      "init_first": 47,
+      "init_second": 48,
+      "pixel_sha256": "9e3da201bfbd1f475fa6292c315cb4418ca85367c8502e53301353ec8ed46fd4",
+      "pgm_files_concatenated_sha256": "996d175f772bbfa3591c8811b06e43a343605c203762c05e76af27d4e2204ccf",
+      "reference_role": "ARKit device reference; not independent ground truth",
+      "reference_used_for_selection": false,
+      "reference_used_for_estimation": false
+    }
+  ],
+  "total_frames": 7836,
+  "distribution": "Private images and trajectories are not redistributed. EuRoC MH01 is an external public dataset."
+}

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "scope": "Publication packaging and portable configuration; separate from the archived tracking benchmark.",
+  "host_release": {
+    "passed": 12,
+    "total": 12,
+    "seconds": 7.99
+  },
+  "python": {
+    "passed": 32,
+    "total": 32,
+    "includes": "24 existing tests plus 8 portable configuration contracts"
+  },
+  "ios_unsigned": {
+    "build": "passed",
+    "installed": false,
+    "signing_team_required": false
+  },
+  "privacy": {
+    "candidate_text_and_image_metadata": "passed",
+    "device_and_filesystem_defaults": "configurable",
+    "private_recordings_or_signed_apps_published": false
+  },
+  "media": {
+    "gif_bytes": 1852923,
+    "strict_maximum_bytes": 2000000,
+    "frames": 100,
+    "duration_ms": 10000,
+    "sha256": "5596a8faa9403bca2461ae579095e8ce48f732be85357081c60b1e14078ef854"
+  },
+  "benchmark_boundary": "Active estimator sources match the frozen integration. Publication also changes generic configuration, two dispatch queue labels and two example paths in the unused historical VideoSource adapter.",
+  "log_sha256": {
+    "host-build": "8e65296fe98439f1489a62f323c1aa877ec73463ea142d3a811a14c992bd8877",
+    "host-tests": "db3ca11cffc3f90fa8a7a8c5dd6a1afa8cebde9cd8a2502e80d1b79572137a8e",
+    "ios-unsigned-build": "50214415d9a92aa61c9fb4a2fd493699f1eeb47206c40405c4b8368a002d1182"
+  }
+}

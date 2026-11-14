@@ -1,130 +1,83 @@
 # iPTAM
 
-[![C++ and Objective-C](https://img.shields.io/badge/code-C%2B%2B%20%7C%20Objective--C-00599C?logo=c%2B%2B&logoColor=white)](xPTAMclean)
-[![Historical Xcode project](https://img.shields.io/badge/platform-iOS%204%20era%20%C2%B7%20Xcode-555555?logo=apple&logoColor=white)](xPTAMclean/xPTAM.xcodeproj)
-[![Unmaintained](https://img.shields.io/badge/status-unmaintained-lightgrey)](#validation-and-limitations)
+[![New!](updated/assets/new-badge.svg)](updated/README.md#updated-and-ported-for-modern-hardware) **[Updated and ported for modern hardware](updated/README.md#updated-and-ported-for-modern-hardware)**
 
-iPTAM is an incomplete iPhone port of PTAM (Parallel Tracking and Mapping), the monocular camera
-tracking and mapping system by Georg Klein and David Murray. The repository combines C++ tracking
-and mapping code with an Objective-C camera/display layer and trimmed copies of LibCVD (`iCVD`)
-and TooN (`iTooN`). It preserves the port and its report rather than a maintained iOS application.
+**PTAM camera tracking, restored for modern iPhones.**
 
-![Schematic of camera capture, tracking, mapping and OpenGL ES display](docs/images/iptam-architecture.svg)
+This project brings the 2010 iPhone port of **Parallel Tracking and Mapping**
+back to life with a portable C++ core, a modern iOS app, recorded-data tests,
+and an experimental variant inspired by the mobile PTAM paper.
+It estimates camera motion from image patches and builds a sparse map.
+ARKit poses, depth and IMU data are not used for tracking.
 
-*Architecture schematic using source component names. It is not a screenshot or evidence that the port runs.*
+![Mobile PTAM tracking a simulated lounge: camera images, tracking status and estimated camera path](docs/assets/lounge-tracking.gif)
 
-## Source organization
+*Saved iPhone replay of a simulated lounge. The full 10-second sequence includes
+initialization and a weak frame: **82/100 frames accepted**. Camera paths are
+visualized offline; this is not a screen recording or a frame-rate benchmark.
+GIF: 1.85 MB.*
 
-[MyVideoBuffer.mm](xPTAMclean/MyVideoBuffer.mm) configures AVFoundation capture, converts frames
-for the tracker and passes them to the PTAM wrapper. The `iPTAM` directory contains the tracker,
-map maker, keyframes and map points; the display layer uses OpenGL ES. `MapMaker` inherits from
-`CVD::Thread` and its constructor calls `start()`. That source structure does not establish
-successful mapping, which the report explicitly says was failing. The intended outputs are
-camera pose and a sparse map displayed over camera frames, not a dense reconstruction or a
-supported file-export format.
+## How well does it work?
 
-See the [original port report](iPTAM%20report.pdf) for the implementation discussion and historical
-limitations. Its results belong to the original experiment, not to a current device validation.
+The mobile variant improves the simulated lounge results. Real recordings still
+expose substantial failures, so this remains a **research prototype**, not a
+reliable room-scanning app.
 
-## Historical build procedure
+| Recording | Original PTAM | Restored iPTAM | Mobile variant |
+| --- | ---: | ---: | ---: |
+| Simulated lounge · historical | 57 / 230 | 44 / 230 | **142 / 230** |
+| Simulated lounge · new motion | 33 / 100 | 71 / 100 | **82 / 100** |
+| EuRoC MH01 · left camera | 366 / 3,682 | **932 / 3,682** | 329 / 3,682 |
+| EuRoC MH01 · right camera | **557 / 3,682** | 234 / 3,682 | 1 / 3,682 |
+| Real lounge · sparse keyframes | 0 / 142 | 0 / 142 | 0 / 142 |
 
-Open [xPTAM.xcodeproj](xPTAMclean/xPTAM.xcodeproj) in Xcode. The saved project targets the iOS 4.1
-SDK and 32-bit architectures, uses an iPhone Developer signing identity, and links UIKit,
-AVFoundation, OpenGL ES and other Apple frameworks. The original instructions required a
-provisioned iPhone running iOS later than 4.0.
+Numbers are visually supported frames over the **whole input**, including
+initialization and lost intervals. Original/restored PTAM use fixed image pairs;
+the mobile system selects its second view automatically. The original engine's
+support diagnostics also differ. These are whole-system results, not an isolated
+tracker ranking.
 
-Those settings are historical requirements. A current Xcode installation is not sufficient
-evidence of buildability: SDK availability, removed APIs, architecture settings and signing must
-be evaluated before attempting a port. There is no verified current installation command.
+All three mobile new-lounge repeats accept the same 82 frames, with 2.4–4.2 cm
+fitted position RMS on that subset. Their poses vary under timed mapping.
+The full [results and limitations](docs/RESULTS.md) include coverage, tracking
+gaps, equal-timestamp comparisons and per-trial data.
 
-## Validation and limitations
+## Try it
 
-Review date: 2026-11-12.
+Build and test the experimental mobile core on the host:
 
-This documentation revision reviewed the project settings, camera/display integration and original report. It did
-not compile the app, install it on an iPhone, test pose tracking or measure runtime performance.
-No automated test suite or current build record is included.
-
-The original report describes successful planar initialization followed by a failure to match map
-points. Recovery was disabled to continue motion-model updates; the report explicitly says that
-true closed-loop tracking and further map building were not taking place. It reports drift and
-scale problems. This is a historical failure account, not a newly reproduced result. The port is
-unmaintained, and camera calibration, tracking and resource use need independent validation on
-any target device. The diagram shows component structure, not successful operation of that chain.
-
-## License
-
-The component paths are `xPTAMclean/iPTAM/`, `xPTAMclean/iCVD/` and `xPTAMclean/iTooN/`.
-No single license is established for the entire repository. The notices below do not establish
-terms for the wrapper/project files, including `xPTAMclean/Classes/`, `MyVideoBuffer.mm` and
-`xPTAM.xcodeproj`; no independent license declaration for those files was established in this
-review.
-The original component notices below are retained verbatim. The PTAM download URL is historical.
-
-All files in the iPTAM folder fall under this license agreement: http://www.robots.ox.ac.uk/~gk/PTAM/download.html
-
-### LibCVD
-
-All files for LibCVD fall under this license agreement which should be in every file in the iCVD directory:
-
-```
-/*
-        This file is part of the CVD Library.
-
-        Copyright (C) 2005 The Authors
-
-        This library is free software; you can redistribute it and/or
-        modify it under the terms of the GNU Lesser General Public
-        License as published by the Free Software Foundation; either
-        version 2.1 of the License, or (at your option) any later version.
-
-        This library is distributed in the hope that it will be useful,
-        but WITHOUT ANY WARRANTY; without even the implied warranty of
-        MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-        Lesser General Public License for more details.
-
-        You should have received a copy of the GNU Lesser General Public
-        License along with this library; if not, write to the Free Software
-        Foundation, Inc.,
-    51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
-*/
+```sh
+cmake -S . -B build-mobile -DCMAKE_BUILD_TYPE=Release -DIPTAM_MOBILE_PAPER=ON
+cmake --build build-mobile -j 4
+ctest --test-dir build-mobile --output-on-failure
 ```
 
-If you find a file in that directory which does not contain this license heading then add this heading and abide by the terms.
+For the iPhone app, use macOS with Xcode and your own signing team:
 
-### TooN
-
-All files for TooN fall under this license agreement which should be in every file in the iTooN directory:
-
-```
-// -*- c++ -*-
-
-//     Copyright (C) 2009 Tom Drummond (twd20@cam.ac.uk)
-//
-// This file is part of the TooN Library.  This library is free
-// software; you can redistribute it and/or modify it under the
-// terms of the GNU General Public License as published by the
-// Free Software Foundation; either version 2, or (at your option)
-// any later version.
-
-// This library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-
-// You should have received a copy of the GNU General Public License along
-// with this library; see the file COPYING.  If not, write to the Free
-// Software Foundation, 59 Temple Place - Suite 330, Boston, MA 02111-1307,
-// USA.
-
-// As a special exception, you may use this file as part of a free software
-// library without restriction.  Specifically, if other files instantiate
-// templates or use macros or inline functions from this file, or you compile
-// this file and link it with other files to produce an executable, this
-// file does not by itself cause the resulting executable to be covered by
-// the GNU General Public License.  This exception does not however
-// invalidate any other reasons why the executable file might be covered by
-// the GNU General Public License.
+```sh
+IPTAM_DEVELOPMENT_TEAM=YOUR_TEAM_ID bash scripts/build_ios.sh mobile
 ```
 
-If you find a file in that directory which does not contain this license heading then add this heading and abide by the terms.
+The app opens a recording library. Select a prepared recording to replay its
+images and timestamps; camera permission is not needed. See the
+[build and replay guide](docs/BUILDING.md) for signing, dataset formats and
+other build variants.
+
+## Explore the project
+
+- [Results](docs/RESULTS.md) — measurements, failures and downloadable tables.
+- [Build and replay guide](docs/BUILDING.md) — host, iOS and test commands.
+- [Mobile implementation](docs/testing/mobile-implementation.md) — algorithms and engineering choices.
+- [Original report](iPTAM%20report.pdf) and [restoration analysis](docs/report-analysis.md) — what the original port attempted and what needed fixing.
+- [Upstream comparison](upstream/README.md) — the separately built Oxford PTAM baseline.
+
+The modern app is in `ios/`; the C++ core and bundled libraries are under
+`xPTAMclean/`. The old Xcode project is retained for historical reference.
+
+## Attribution and licensing
+
+Original iPhone port by Aaron Wetzler, based on PTAM by Georg Klein and David
+Murray. The mobile variant is inspired by their
+[2009 camera-phone paper](https://www.robots.ox.ac.uk/~dwm/Publications/Papers/klein_murray_ismar2009/klein_murray_ismar2009.pdf).
+It is a new implementation on the restored core, not the historical commercial
+phone source. See [component licenses and original notices](LICENSES.md).
